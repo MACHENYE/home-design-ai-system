@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>家装智能设计系统</title>
+    <link rel="stylesheet" href="vendor/element-plus.css" />
+    <link rel="stylesheet" href="styles.css?v=20260427-4" />
+  </head>
+  <body>
+    <div id="app" v-cloak>
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark">AI</div>
+          <div>
+            <h1>家装设计图生成</h1>
+          </div>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="panel control-panel">
+          <div class="panel-head">
+            <div>
+              <span class="eyebrow">1. 输入素材</span>
+              <h2>上传底稿和参考图</h2>
+            </div>
+            <el-progress :percentage="completionRate" :stroke-width="8" :show-text="false"></el-progress>
+          </div>
+
+          <div class="upload-grid">
+            <el-upload
+              class="upload-box"
+              drag
+              :show-file-list="false"
+              :auto-upload="false"
+              accept="image/*"
+              :on-change="(file) => handleFile(file, 'draft')"
+            >
+              <strong>设计底稿</strong>
+              <span>{{ draftState }}</span>
+            </el-upload>
+
+            <el-upload
+              class="upload-box"
+              drag
+              :show-file-list="false"
+              :auto-upload="false"
+              accept="image/*"
+              :on-change="(file) => handleFile(file, 'ref')"
+            >
+              <strong>风格参考</strong>
+              <span>{{ refState }}</span>
+            </el-upload>
+          </div>
+
+          <details class="minor-options">
+            <summary>使用图片 URL</summary>
+            <el-form label-position="top" class="form-grid compact-form">
+              <el-form-item label="底稿 URL">
+                <el-input v-model="draftUrl" clearable placeholder="https://..." @change="useUrl(draftUrl, 'draft')"></el-input>
+              </el-form-item>
+              <el-form-item label="参考 URL">
+                <el-input v-model="refUrl" clearable placeholder="https://..." @change="useUrl(refUrl, 'ref')"></el-input>
+              </el-form-item>
+            </el-form>
+          </details>
+
+          <div class="section-divider"></div>
+
+          <div class="panel-head tight">
+            <div>
+              <span class="eyebrow">2. 设计需求</span>
+              <h2>选择风格并描述想要的效果</h2>
+            </div>
+          </div>
+
+          <div class="preset-row">
+            <button
+              v-for="preset in quickPresets"
+              :key="preset.name"
+              type="button"
+              class="preset-chip"
+              @click="applyQuickPreset(preset)"
+            >
+              <strong>{{ preset.name }}</strong>
+              <span>{{ preset.desc }}</span>
+            </button>
+          </div>
+
+          <el-form label-position="top" class="compact-form">
+            <div class="form-grid">
+              <el-form-item label="空间">
+                <el-select v-model="form.room_type" filterable>
+                  <el-option v-for="item in presets.roomTypes" :key="item" :label="item" :value="item"></el-option>
+                </el-select>
+              </el-form-item>
+              <el-form-item label="风格">
+                <el-select v-model="form.design_style" filterable>
+                  <el-option v-for="item in presets.styles" :key="item" :label="item" :value="item"></el-option>
+                </el-select>
+              </el-form-item>
+              <el-form-item label="色彩">
+                <el-select v-model="form.color_preference" filterable>
+                  <el-option v-for="item in presets.colors" :key="item" :label="item" :value="item"></el-option>
+                </el-select>
+              </el-form-item>
+              <el-form-item label="材质">
+                <el-select v-model="form.material_preference" filterable>
+                  <el-option v-for="item in presets.materials" :key="item" :label="item" :value="item"></el-option>
+                </el-select>
+              </el-form-item>
+            </div>
+
+            <el-form-item label="需求描述">
+              <el-input v-model="form.prompt" type="textarea" :rows="5" resize="vertical"></el-input>
+            </el-form-item>
+
+            <div class="prompt-chip-group">
+              <el-tag
+                v-for="chip in promptChips"
+                :key="chip"
+                class="prompt-chip"
+                effect="plain"
+                @click="appendPrompt(chip)"
+              >
+                {{ chip }}
+              </el-tag>
+            </div>
+
+            <details class="minor-options">
+              <summary>高级设置</summary>
+              <div class="form-grid">
+                <el-form-item label="文化元素">
+                  <el-select v-model="form.cultural_element" filterable>
+                    <el-option v-for="item in presets.culturalElements" :key="item" :label="item" :value="item"></el-option>
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="预算等级">
+                  <el-select v-model="form.budget_level" filterable>
+                    <el-option v-for="item in presets.budgetLevels" :key="item" :label="item" :value="item"></el-option>
+                  </el-select>
+                </el-form-item>
+              </div>
+              <el-form-item label="排除项">
+                <el-input v-model="form.negative_prompt" clearable></el-input>
+              </el-form-item>
+              <el-form-item label="保持原有结构">
+                <el-switch v-model="form.keep_structure" inline-prompt active-text="开" inactive-text="关"></el-switch>
+              </el-form-item>
+              <el-form-item label="局部重绘笔刷">
+                <el-slider v-model="brushSize" :min="8" :max="72"></el-slider>
+              </el-form-item>
+              <div class="canvas-stack">
+                <canvas ref="draftCanvasRef" width="960" height="540"></canvas>
+                <canvas ref="maskCanvasRef" width="960" height="540"></canvas>
+              </div>
+              <div class="mask-actions">
+                <el-tag size="small" :type="maskDirty ? 'success' : 'info'">{{ maskState }}</el-tag>
+                <el-button size="small" @click="clearMask">清空掩码</el-button>
+              </div>
+            </details>
+          </el-form>
+
+          <div class="submit-bar">
+            <el-button class="generate-button" type="primary" size="large" :loading="submitting" @click="submitDesign">开始生成设计图</el-button>
+            <span>{{ taskStateText }}</span>
+          </div>
+        </section>
+
+        <aside class="panel result-panel">
+          <div class="panel-head">
+            <div>
+              <span class="eyebrow">3. 生成结果</span>
+              <h2>查看和保存方案</h2>
+            </div>
+            <el-button :disabled="!currentTaskId" @click="refreshCurrentTask">刷新</el-button>
+          </div>
+
+          <div class="result-box">
+            <el-image v-if="resultImage" :src="resultImage" fit="contain" class="result-image"></el-image>
+            <el-empty v-else description="生成后的设计图会显示在这里"></el-empty>
+          </div>
+
+          <div class="result-actions">
+            <el-button type="primary" plain :disabled="!resultImage" @click="saveCurrentScheme">收藏当前方案</el-button>
+            <el-tag effect="plain">{{ currentTaskId ? shortTaskId(currentTaskId) : "未开始" }}</el-tag>
+          </div>
+
+          <div class="preview-grid">
+            <div class="preview-card">
+              <label>底稿</label>
+              <el-image v-if="draftPreview" :src="draftPreview" fit="cover"></el-image>
+              <span v-else>未上传</span>
+            </div>
+            <div class="preview-card">
+              <label>参考</label>
+              <el-image v-if="refPreview" :src="refPreview" fit="cover"></el-image>
+              <span v-else>可选</span>
+            </div>
+          </div>
+
+          <div class="history-block">
+            <div class="small-title">
+              <strong>最近任务</strong>
+              <span>{{ history.length }} 条</span>
+            </div>
+            <div class="history-toolbar">
+              <el-select
+                v-model="recordStyleFilter"
+                size="small"
+                clearable
+                placeholder="按风格筛选"
+                @change="loadDesignRecords"
+              >
+                <el-option v-for="item in presets.styles" :key="item" :label="item" :value="item"></el-option>
+              </el-select>
+              <el-button size="small" @click="loadDesignRecords">同步</el-button>
+            </div>
+            <div v-if="history.length" class="history-list">
+              <button
+                v-for="item in history.slice(0, 5)"
+                :key="item.taskId"
+                type="button"
+                class="history-item"
+                :class="{ active: item.taskId === currentTaskId }"
+                @click="openHistory(item.taskId)"
+              >
+                <strong>{{ shortTaskId(item.taskId) }}</strong>
+                <span>{{ item.status }}</span>
+              </button>
+            </div>
+            <el-empty v-else description="暂无任务" :image-size="64"></el-empty>
+          </div>
+
+          <div class="record-detail">
+            <div class="small-title">
+              <strong>历史方案详情</strong>
+              <el-button size="small" type="danger" plain :disabled="!selectedRecord" @click="deleteCurrentRecord">删除记录</el-button>
+            </div>
+            <div v-if="selectedRecord" class="detail-content">
+              <div class="detail-row">
+                <label>任务编号</label>
+                <span>{{ shortTaskId(selectedRecord.task_id) }}</span>
+              </div>
+              <div class="detail-grid">
+                <div>
+                  <label>空间</label>
+                  <span>{{ selectedRecord.room_type || "-" }}</span>
+                </div>
+                <div>
+                  <label>风格</label>
+                  <span>{{ selectedRecord.design_style || "-" }}</span>
+                </div>
+                <div>
+                  <label>色彩</label>
+                  <span>{{ selectedRecord.color_preference || "-" }}</span>
+                </div>
+                <div>
+                  <label>材质</label>
+                  <span>{{ selectedRecord.material_preference || "-" }}</span>
+                </div>
+              </div>
+              <div class="detail-row">
+                <label>提示词/设计需求</label>
+                <p>{{ selectedRecord.prompt }}</p>
+              </div>
+              <div class="detail-row" v-if="selectedRecord.negative_prompt">
+                <label>排除项</label>
+                <p>{{ selectedRecord.negative_prompt }}</p>
+              </div>
+              <div class="url-list">
+                <div v-if="selectedRecord.draft_image_url">
+                  <label>底稿地址</label>
+                  <a :href="selectedRecord.draft_image_url" target="_blank" :title="selectedRecord.draft_image_url">查看</a>
+                </div>
+                <div v-if="selectedRecord.reference_image_url">
+                  <label>参考图地址</label>
+                  <a :href="selectedRecord.reference_image_url" target="_blank" :title="selectedRecord.reference_image_url">查看</a>
+                </div>
+                <div v-if="selectedRecord.result_image_url">
+                  <label>结果图地址</label>
+                  <a :href="selectedRecord.result_image_url" target="_blank" :title="selectedRecord.result_image_url">查看</a>
+                </div>
+              </div>
+            </div>
+            <el-empty v-else description="点击最近任务查看完整记录" :image-size="64"></el-empty>
+          </div>
+        </aside>
+      </main>
+    </div>
+
+    <script src="vendor/vue.global.prod.js"></script>
+    <script src="vendor/element-plus.full.min.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
