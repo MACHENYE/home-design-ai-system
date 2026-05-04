@@ -79,6 +79,14 @@ createApp({
   data() {
     return {
       apiBaseInput: window.location.protocol === "file:" ? "http://127.0.0.1:8000" : "",
+      authMode: "login",
+      authLoading: false,
+      authToken: localStorage.getItem("home-design-token") || "",
+      currentUser: null,
+      authForm: {
+        username: "",
+        password: "",
+      },
       provider: "checking",
       activeTab: "studio",
       projectDrawer: false,
@@ -137,6 +145,10 @@ createApp({
   },
 
   computed: {
+    isAuthenticated() {
+      return Boolean(this.authToken && this.currentUser);
+    },
+
     providerText() {
       if (this.provider === "mock") return "演示模式";
       if (this.provider === "nanobanana") return "API 模式";
@@ -149,18 +161,6 @@ createApp({
       if (this.provider === "nanobanana") return "success";
       if (this.provider === "error") return "danger";
       return "info";
-    },
-
-    completionRate() {
-      let score = 8;
-      if (this.draftAsset || this.draftUrl) score += 24;
-      if (this.refAsset || this.refUrl) score += 16;
-      if (this.form.prompt.trim()) score += 18;
-      if (this.currentTaskId) score += 16;
-      if (this.resultImage) score += 10;
-      if (this.maskDirty) score += 4;
-      if (this.savedSchemes.length) score += 4;
-      return Math.min(score, 100);
     },
 
     activeStep() {
@@ -214,6 +214,10 @@ createApp({
       return this.savedSchemes.find((item) => item.id === this.selectedSavedSchemeId) || null;
     },
 
+    isGenerating() {
+      return this.submitting || (Boolean(this.currentTaskId) && !this.resultImage && !this.taskStateText.includes("失败"));
+    },
+
     currentInsights() {
       return [
         {
@@ -238,12 +242,13 @@ createApp({
   },
 
   mounted() {
-    this.setupCanvas();
     this.history = this.normalizeHistory(this.history);
     this.saveHistory();
     this.loadPresets();
     this.loadHealth();
-    this.loadDesignRecords(false);
+    if (this.authToken) {
+      this.loadMe();
+    }
   },
 
   beforeUnmount() {
@@ -268,13 +273,93 @@ createApp({
     },
 
     async request(path, options = {}) {
-      const res = await fetch(this.apiPath(path), options);
+      const headers = new Headers(options.headers || {});
+      if (this.authToken && !headers.has("Authorization")) {
+        headers.set("Authorization", `Bearer ${this.authToken}`);
+      }
+      const res = await fetch(this.apiPath(path), { ...options, headers });
       const text = await res.text();
       const data = text ? JSON.parse(text) : null;
       if (!res.ok) {
+        if (res.status === 401 && !path.includes("/api/v1/auth/")) {
+          this.clearAuth();
+        }
         throw new Error(data?.detail || `HTTP ${res.status}`);
       }
       return data;
+    },
+
+    async submitAuth() {
+      if (!this.authForm.username.trim() || !this.authForm.password) {
+        ElMessage.warning("请输入账号和密码");
+        return;
+      }
+      this.authLoading = true;
+      try {
+        const auth = await this.request(`/api/v1/auth/${this.authMode}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username: this.authForm.username.trim(),
+            password: this.authForm.password,
+          }),
+        });
+        this.applyAuth(auth);
+        ElMessage.success(this.authMode === "login" ? "登录成功" : "注册成功");
+      } catch (err) {
+        ElMessage.error(err.message);
+      } finally {
+        this.authLoading = false;
+      }
+    },
+
+    applyAuth(auth) {
+      this.authToken = auth.token;
+      this.currentUser = auth.user;
+      localStorage.setItem("home-design-token", auth.token);
+      this.authForm.password = "";
+      this.history = [];
+      this.savedSchemes = [];
+      this.recordCache = {};
+      this.selectedRecord = null;
+      nextTick(() => this.setupCanvas());
+      this.loadDesignRecords(false);
+      this.loadFavorites(false);
+    },
+
+    async loadMe() {
+      try {
+        const user = await this.request("/api/v1/auth/me");
+        this.currentUser = user;
+        nextTick(() => this.setupCanvas());
+        this.loadDesignRecords(false);
+        this.loadFavorites(false);
+      } catch (err) {
+        this.clearAuth();
+      }
+    },
+
+    clearAuth() {
+      this.authToken = "";
+      this.currentUser = null;
+      this.currentTaskId = "";
+      this.taskStateText = "等待提交";
+      this.resultImage = "";
+      this.history = [];
+      this.savedSchemes = [];
+      this.recordCache = {};
+      this.selectedRecord = null;
+      localStorage.removeItem("home-design-token");
+    },
+
+    async logout() {
+      try {
+        await this.request("/api/v1/auth/logout", { method: "POST" });
+      } catch (err) {
+        // Local logout is still valid if the server session was already gone.
+      }
+      this.clearAuth();
+      ElMessage.success("已退出登录");
     },
 
     reloadBackend() {
@@ -364,6 +449,8 @@ createApp({
     setupCanvas() {
       const canvas = this.$refs.maskCanvasRef;
       if (!canvas) return;
+      if (canvas.dataset.bound === "true") return;
+      canvas.dataset.bound = "true";
       const ctx = canvas.getContext("2d");
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
@@ -549,7 +636,7 @@ createApp({
       }
     },
 
-    saveCurrentScheme() {
+    async saveCurrentScheme() {
       if (!this.resultImage) {
         ElMessage.warning("当前还没有可收藏的结果图");
         return;
@@ -557,22 +644,78 @@ createApp({
 
       const scheme = {
         id: this.currentTaskId || `local-${Date.now()}`,
+        taskId: this.currentTaskId || null,
         title: `${this.form.room_type} · ${this.form.design_style}`,
         style: `${this.form.color_preference} / ${this.form.material_preference}`,
         image: this.resultImage,
         time: new Date().toLocaleString(),
       };
 
-      this.savedSchemes = [scheme, ...this.savedSchemes.filter((item) => item.id !== scheme.id)].slice(0, 8);
-      this.selectedSavedSchemeId = scheme.id;
-      this.project.stage = "方案比对";
-      ElMessage.success("已收藏当前方案");
+      try {
+        const saved = await this.request("/api/v1/favorites", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            task_id: scheme.taskId,
+            title: scheme.title,
+            style: scheme.style,
+            image: scheme.image,
+          }),
+        });
+        const normalized = this.favoriteToScheme(saved);
+        this.savedSchemes = [normalized, ...this.savedSchemes.filter((item) => item.id !== normalized.id)].slice(0, 20);
+        this.selectedSavedSchemeId = normalized.id;
+        this.currentTaskId = "";
+        this.selectedRecord = null;
+        this.project.stage = "方案比对";
+        ElMessage.success("已收藏当前方案");
+      } catch (err) {
+        ElMessage.error(err.message);
+      }
     },
 
     selectSavedScheme(scheme) {
       this.selectedSavedSchemeId = scheme.id;
+      this.currentTaskId = "";
+      this.selectedRecord = null;
       this.compareMode = "result-saved";
       this.activeTab = "compare";
+      this.resultImage = scheme.image;
+    },
+
+    favoriteToScheme(favorite) {
+      const createdAt = this.toTimestampMs(favorite.created_at) || Date.now();
+      return {
+        id: favorite.id,
+        taskId: favorite.task_id,
+        title: favorite.title,
+        style: favorite.style,
+        image: favorite.image,
+        time: new Date(createdAt).toLocaleString(),
+        createdAt,
+      };
+    },
+
+    async loadFavorites(showMessage = true) {
+      try {
+        const favorites = await this.request("/api/v1/favorites?limit=30");
+        this.savedSchemes = favorites.map((item) => this.favoriteToScheme(item));
+        if (showMessage) ElMessage.success("收藏已同步");
+      } catch (err) {
+        if (showMessage) ElMessage.error(err.message);
+      }
+    },
+
+    async removeFavorite(scheme) {
+      if (!scheme?.id) return;
+      try {
+        await this.request(`/api/v1/favorites/${encodeURIComponent(scheme.id)}`, { method: "DELETE" });
+        this.savedSchemes = this.savedSchemes.filter((item) => item.id !== scheme.id);
+        if (this.selectedSavedSchemeId === scheme.id) this.selectedSavedSchemeId = "";
+        ElMessage.success("已取消收藏");
+      } catch (err) {
+        ElMessage.error(err.message);
+      }
     },
 
     shortTaskId(taskId) {
@@ -704,6 +847,7 @@ createApp({
 
     openHistory(taskId) {
       this.currentTaskId = taskId;
+      this.selectedSavedSchemeId = "";
       this.activeTab = "archive";
       this.refreshTask(taskId, true);
       this.loadDesignRecord(taskId, true);

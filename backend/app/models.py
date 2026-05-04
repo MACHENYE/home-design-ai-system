@@ -6,6 +6,27 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class UserRegisterRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=32, pattern=r"^[a-zA-Z0-9_\-\u4e00-\u9fff]+$")
+    password: str = Field(min_length=6, max_length=128)
+
+
+class UserLoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=32)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class UserProfile(BaseModel):
+    id: int
+    username: str
+    created_at: int | None = None
+
+
+class AuthResponse(BaseModel):
+    token: str
+    user: UserProfile
+
+
 class NanoBananaTaskStatus(int, Enum):
     created = 1
     processing = 2
@@ -91,6 +112,23 @@ class DesignRecord(BaseModel):
     error_message: str | None = None
     created_at: int | None = None
     updated_at: int | None = None
+
+
+class FavoriteSchemeCreate(BaseModel):
+    task_id: str | None = None
+    title: str = Field(min_length=1, max_length=120)
+    style: str | None = Field(default=None, max_length=160)
+    image: str = Field(min_length=1)
+
+
+class FavoriteScheme(BaseModel):
+    id: int
+    user_id: int
+    task_id: str | None = None
+    title: str
+    style: str | None = None
+    image: str
+    created_at: int | None = None
 
 
 class AssetUploadResponse(BaseModel):

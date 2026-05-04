@@ -1,24 +1,34 @@
 from __future__ import annotations
 
 import re
+import hashlib
+import hmac
+import secrets
+import sqlite3
 import uuid
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .models import (
     AssetUploadResponse,
+    AuthResponse,
     DesignRecord,
+    FavoriteScheme,
+    FavoriteSchemeCreate,
     GenerateMode,
     GenerateRequest,
-    NanoBananaCallback,
+    GenerateType,
     NanoBananaTaskStatus,
     SubmitResponse,
     TaskRecord,
+    UserLoginRequest,
+    UserProfile,
+    UserRegisterRequest,
 )
 from .mock_provider import make_demo_result, make_demo_task_id
 from .nanobanana_client import NanoBananaClient
@@ -67,26 +77,55 @@ def _extract_task_id(resp: object) -> str | None:
         return str(task_id)
 
     data = resp.get("data")
-    if isinstance(data, dict) and data.get("taskId"):
-        return str(data["taskId"])
+    if isinstance(data, dict):
+        task_id = data.get("taskId") or data.get("task_id") or data.get("id")
+        if task_id:
+            return str(task_id)
 
     return None
+
+
+def _nanobanana_error_detail(resp: object) -> str:
+    if not isinstance(resp, dict):
+        return "Unexpected NanoBanana response (not a JSON object)"
+
+    code = resp.get("code")
+    message = resp.get("msg") or resp.get("message") or resp.get("error") or resp.get("errorMessage")
+    data = resp.get("data")
+    if isinstance(data, dict):
+        message = message or data.get("msg") or data.get("message") or data.get("error") or data.get("errorMessage")
+
+    parts = ["Unexpected NanoBanana response (missing taskId)"]
+    if code is not None:
+        parts.append(f"code={code}")
+    if message:
+        parts.append(f"message={message}")
+    return "; ".join(parts)
 
 
 def _parse_record_info(data: dict[str, object], rec: TaskRecord) -> tuple[NanoBananaTaskStatus, str | None, str | None]:
     status = rec.status
     success_flag = data.get("successFlag")
+    error_code = data.get("errorCode")
+    error_msg = data.get("errorMsg") or data.get("errorMessage") or rec.error_message
+
     if success_flag in {1, "1", True}:
         status = NanoBananaTaskStatus.success
-    elif data.get("errorCode") or data.get("errorMsg") or data.get("errorMessage"):
+    elif success_flag in {0, "0", False, None} and not error_msg and error_code in {None, 0, "0"}:
+        status = NanoBananaTaskStatus.processing
+    elif success_flag in {2, "2", 3, "3"} or error_msg or error_code not in {None, 0, "0"}:
         status = NanoBananaTaskStatus.failed
     else:
         status_raw = data.get("status")
         if status_raw is not None:
             try:
                 status_int = int(status_raw)
-                if status_int in {1, 2, 3, 4}:
-                    status = NanoBananaTaskStatus(status_int)
+                status = {
+                    0: NanoBananaTaskStatus.processing,
+                    1: NanoBananaTaskStatus.success,
+                    2: NanoBananaTaskStatus.failed,
+                    3: NanoBananaTaskStatus.failed,
+                }.get(status_int, status)
             except (TypeError, ValueError):
                 pass
 
@@ -98,7 +137,6 @@ def _parse_record_info(data: dict[str, object], rec: TaskRecord) -> tuple[NanoBa
         or response_data.get("originImageUrl")
         or rec.result_image_url
     )
-    error_msg = data.get("errorMsg") or data.get("errorMessage") or rec.error_message
 
     return status, str(result_url) if result_url else None, str(error_msg) if error_msg else None
 
@@ -119,9 +157,90 @@ uploads_path.mkdir(parents=True, exist_ok=True)
 frontend_path = Path(settings.frontend_dir)
 
 
+def _hash_password(password: str, salt: str | None = None) -> str:
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000)
+    return f"pbkdf2_sha256${salt}${digest.hex()}"
+
+
+def _verify_password(password: str, stored_hash: str) -> bool:
+    try:
+        algorithm, salt, expected = stored_hash.split("$", 2)
+    except ValueError:
+        return False
+    if algorithm != "pbkdf2_sha256":
+        return False
+    actual = _hash_password(password, salt).split("$", 2)[2]
+    return hmac.compare_digest(actual, expected)
+
+
+def _extract_bearer_token(authorization: str | None) -> str | None:
+    if not authorization:
+        return None
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        return None
+    return token.strip()
+
+
+async def current_user(authorization: str | None = Header(default=None)) -> UserProfile:
+    token = _extract_bearer_token(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="请先登录")
+    user = store.get_user_by_token(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="登录状态已失效，请重新登录")
+    return user
+
+
+async def optional_user(authorization: str | None = Header(default=None)) -> UserProfile | None:
+    token = _extract_bearer_token(authorization)
+    if not token:
+        return None
+    return store.get_user_by_token(token)
+
+
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
     return {"status": "ok", "provider": _active_provider()}
+
+
+@app.post("/api/v1/auth/register", response_model=AuthResponse)
+async def register(req: UserRegisterRequest) -> AuthResponse:
+    username = req.username.strip()
+    try:
+        user = store.create_user(username, _hash_password(req.password))
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(status_code=409, detail="用户名已存在") from exc
+    token = secrets.token_urlsafe(32)
+    store.create_session(token, user.id)
+    return AuthResponse(token=token, user=user)
+
+
+@app.post("/api/v1/auth/login", response_model=AuthResponse)
+async def login(req: UserLoginRequest) -> AuthResponse:
+    found = store.get_user_by_username(req.username.strip())
+    if not found:
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+    user, password_hash = found
+    if not _verify_password(req.password, password_hash):
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+    token = secrets.token_urlsafe(32)
+    store.create_session(token, user.id)
+    return AuthResponse(token=token, user=user)
+
+
+@app.get("/api/v1/auth/me", response_model=UserProfile)
+async def me(user: UserProfile = Depends(current_user)) -> UserProfile:
+    return user
+
+
+@app.post("/api/v1/auth/logout")
+async def logout(authorization: str | None = Header(default=None)) -> dict[str, bool]:
+    token = _extract_bearer_token(authorization)
+    if token:
+        store.delete_session(token)
+    return {"ok": True}
 
 
 @app.get("/", response_model=None)
@@ -171,7 +290,7 @@ async def upload_asset(
 
 
 @app.post("/api/v1/design/submit", response_model=SubmitResponse)
-async def submit(req: GenerateRequest) -> SubmitResponse:
+async def submit(req: GenerateRequest, user: UserProfile | None = Depends(optional_user)) -> SubmitResponse:
     provider = _active_provider()
     final_prompt = build_home_design_prompt(req)
 
@@ -182,11 +301,13 @@ async def submit(req: GenerateRequest) -> SubmitResponse:
             task_id,
             NanoBananaTaskStatus.processing,
             raw={"provider": "mock", "request": req.model_dump(), "prompt": final_prompt},
+            user_id=user.id if user else None,
         )
         store.save_design_request(
             task_id,
             req,
             status=NanoBananaTaskStatus.processing,
+            user_id=user.id if user else None,
         )
         store.update_result(
             task_id,
@@ -215,11 +336,18 @@ async def submit(req: GenerateRequest) -> SubmitResponse:
         image_urls.append(req.mask_url)
 
     if req.mode == GenerateMode.basic:
+        generate_type = req.type
+        if generate_type == GenerateType.image_to_image and not image_urls:
+            generate_type = GenerateType.text_to_image
+
         payload: dict[str, object] = {
-            "type": req.type.value,
+            "type": generate_type.value,
             "prompt": final_prompt,
             "callBackUrl": callback_url,
+            "numImages": 1,
         }
+        if req.aspect_ratio:
+            payload["image_size"] = req.aspect_ratio
         if req.model_name:
             payload["modelName"] = req.model_name
         if req.safe_word:
@@ -260,45 +388,69 @@ async def submit(req: GenerateRequest) -> SubmitResponse:
 
     task_id = _extract_task_id(resp)
     if not task_id:
-        raise HTTPException(status_code=502, detail="Unexpected NanoBanana response (missing taskId)")
+        raise HTTPException(status_code=502, detail=_nanobanana_error_detail(resp))
 
     store.upsert(
         task_id,
         NanoBananaTaskStatus.created,
         raw={"provider": "nanobanana", "submit": resp, "request": req.model_dump(), "prompt": final_prompt},
+        user_id=user.id if user else None,
     )
     store.save_design_request(
         task_id,
         req,
         status=NanoBananaTaskStatus.created,
+        user_id=user.id if user else None,
     )
     return SubmitResponse(task_id=task_id)
 
 
 @app.get("/api/v1/design/records", response_model=list[DesignRecord])
-async def list_design_records(limit: int = 50, design_style: str | None = None) -> list[DesignRecord]:
-    return store.list_design_records(limit=limit, design_style=design_style)
+async def list_design_records(
+    limit: int = 50,
+    design_style: str | None = None,
+    user: UserProfile = Depends(current_user),
+) -> list[DesignRecord]:
+    return store.list_design_records(limit=limit, design_style=design_style, user_id=user.id)
 
 
 @app.get("/api/v1/design/records/{task_id}", response_model=DesignRecord)
-async def get_design_record(task_id: str) -> DesignRecord:
-    rec = store.get_design_record(task_id)
+async def get_design_record(task_id: str, user: UserProfile = Depends(current_user)) -> DesignRecord:
+    rec = store.get_design_record(task_id, user_id=user.id)
     if not rec:
         raise HTTPException(status_code=404, detail="design record not found")
     return rec
 
 
 @app.delete("/api/v1/design/records/{task_id}")
-async def delete_design_record(task_id: str) -> dict[str, bool]:
-    deleted = store.delete_design_record(task_id)
+async def delete_design_record(task_id: str, user: UserProfile = Depends(current_user)) -> dict[str, bool]:
+    deleted = store.delete_design_record(task_id, user_id=user.id)
     if not deleted:
         raise HTTPException(status_code=404, detail="design record not found")
     return {"deleted": True}
 
 
+@app.get("/api/v1/favorites", response_model=list[FavoriteScheme])
+async def list_favorites(limit: int = 50, user: UserProfile = Depends(current_user)) -> list[FavoriteScheme]:
+    return store.list_favorite_schemes(user.id, limit=limit)
+
+
+@app.post("/api/v1/favorites", response_model=FavoriteScheme)
+async def save_favorite(scheme: FavoriteSchemeCreate, user: UserProfile = Depends(current_user)) -> FavoriteScheme:
+    return store.save_favorite_scheme(user.id, scheme)
+
+
+@app.delete("/api/v1/favorites/{favorite_id}")
+async def delete_favorite(favorite_id: int, user: UserProfile = Depends(current_user)) -> dict[str, bool]:
+    deleted = store.delete_favorite_scheme(user.id, favorite_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="favorite not found")
+    return {"deleted": True}
+
+
 @app.get("/api/v1/tasks", response_model=list[TaskRecord])
-async def list_tasks(limit: int = 50) -> list[TaskRecord]:
-    return store.list_recent(limit)
+async def list_tasks(limit: int = 50, user: UserProfile = Depends(current_user)) -> list[TaskRecord]:
+    return store.list_recent(limit, user_id=user.id)
 
 
 @app.get("/api/v1/tasks/{task_id}", response_model=TaskRecord)
@@ -334,26 +486,44 @@ async def refresh_task(task_id: str) -> TaskRecord:
 
 
 @app.post("/api/v1/nanobanana/callback")
-async def nanobanana_callback(cb: NanoBananaCallback) -> dict[str, str]:
-    task_id = cb.taskId
-    status_raw = int(cb.status)
-    status = NanoBananaTaskStatus(status_raw) if status_raw in {1, 2, 3, 4} else NanoBananaTaskStatus.processing
+async def nanobanana_callback(cb: dict[str, object]) -> dict[str, str]:
+    data = cb.get("data") if isinstance(cb.get("data"), dict) else {}
+    info = data.get("info") if isinstance(data.get("info"), dict) else {}
+    task_id = cb.get("taskId") or data.get("taskId")
+    if not task_id:
+        raise HTTPException(status_code=400, detail="callback missing taskId")
 
-    if not store.get(task_id):
-        store.upsert(task_id, NanoBananaTaskStatus.processing, raw={"callback_first": cb.model_dump()})
+    code = cb.get("code")
+    status_raw = cb.get("status")
+    if code in {200, "200"}:
+        status = NanoBananaTaskStatus.success
+    elif code in {400, "400", 500, "500", 501, "501"}:
+        status = NanoBananaTaskStatus.failed
+    else:
+        try:
+            status_int = int(status_raw) if status_raw is not None else 2
+            status = NanoBananaTaskStatus(status_int) if status_int in {1, 2, 3, 4} else NanoBananaTaskStatus.processing
+        except (TypeError, ValueError):
+            status = NanoBananaTaskStatus.processing
+
+    result_image_url = cb.get("resultImageUrl") or info.get("resultImageUrl")
+    error_message = cb.get("errorMsg") or cb.get("msg")
+
+    if not store.get(str(task_id)):
+        store.upsert(str(task_id), NanoBananaTaskStatus.processing, raw={"callback_first": cb})
 
     store.update_result(
-        task_id,
+        str(task_id),
         status=status,
-        result_image_url=cb.resultImageUrl,
-        error_message=cb.errorMsg,
-        raw={"callback": cb.model_dump()},
+        result_image_url=str(result_image_url) if result_image_url else None,
+        error_message=str(error_message) if error_message and status == NanoBananaTaskStatus.failed else None,
+        raw={"callback": cb},
     )
     store.update_design_result(
-        task_id,
+        str(task_id),
         status=status,
-        result_image_url=cb.resultImageUrl,
-        error_message=cb.errorMsg,
+        result_image_url=str(result_image_url) if result_image_url else None,
+        error_message=str(error_message) if error_message and status == NanoBananaTaskStatus.failed else None,
     )
     return {"ok": "true"}
 

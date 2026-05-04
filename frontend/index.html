@@ -9,12 +9,53 @@
   </head>
   <body>
     <div id="app" v-cloak>
+      <section v-if="!isAuthenticated" class="auth-shell">
+        <div class="auth-card">
+          <div class="brand auth-brand">
+            <div class="brand-mark">AI</div>
+            <div>
+              <h1>家装设计图生成</h1>
+              <p>登录后管理你的历史记录和收藏方案</p>
+            </div>
+          </div>
+
+          <el-tabs v-model="authMode" stretch>
+            <el-tab-pane label="登录" name="login"></el-tab-pane>
+            <el-tab-pane label="注册" name="register"></el-tab-pane>
+          </el-tabs>
+
+          <el-form label-position="top" class="compact-form" @submit.prevent>
+            <el-form-item label="账号">
+              <el-input v-model="authForm.username" maxlength="32" clearable autocomplete="username"></el-input>
+            </el-form-item>
+            <el-form-item label="密码">
+              <el-input
+                v-model="authForm.password"
+                type="password"
+                maxlength="128"
+                show-password
+                autocomplete="current-password"
+                @keyup.enter="submitAuth"
+              ></el-input>
+            </el-form-item>
+            <el-button class="generate-button auth-button" type="primary" size="large" :loading="authLoading" @click="submitAuth">
+              {{ authMode === "login" ? "登录" : "注册并登录" }}
+            </el-button>
+          </el-form>
+        </div>
+      </section>
+
+      <template v-else>
       <header class="topbar">
         <div class="brand">
           <div class="brand-mark">AI</div>
           <div>
             <h1>家装设计图生成</h1>
           </div>
+        </div>
+        <div class="user-box">
+          <el-tag effect="plain">{{ currentUser.username }}</el-tag>
+          <el-button size="small" @click="logout">退出登录</el-button>
         </div>
       </header>
 
@@ -25,7 +66,6 @@
               <span class="eyebrow">1. 输入素材</span>
               <h2>上传底稿和参考图</h2>
             </div>
-            <el-progress :percentage="completionRate" :stroke-width="8" :show-text="false"></el-progress>
           </div>
 
           <div class="upload-grid">
@@ -179,6 +219,11 @@
 
           <div class="result-box">
             <el-image v-if="resultImage" :src="resultImage" fit="contain" class="result-image"></el-image>
+            <div v-else-if="isGenerating" class="generating-state">
+              <div class="generating-loader"></div>
+              <strong>正在生成设计图</strong>
+              <p>{{ taskStateText }}</p>
+            </div>
             <el-empty v-else description="生成后的设计图会显示在这里"></el-empty>
           </div>
 
@@ -198,6 +243,34 @@
               <el-image v-if="refPreview" :src="refPreview" fit="cover"></el-image>
               <span v-else>可选</span>
             </div>
+          </div>
+
+          <div class="favorite-block">
+            <div class="small-title">
+              <strong>收藏方案</strong>
+              <div class="inline-actions">
+                <span>{{ savedSchemes.length }} 个</span>
+                <el-button size="small" @click="loadFavorites">同步</el-button>
+              </div>
+            </div>
+            <div v-if="savedSchemes.length" class="favorite-list">
+              <button
+                v-for="scheme in savedSchemes"
+                :key="scheme.id"
+                type="button"
+                class="favorite-item"
+                :class="{ active: scheme.id === selectedSavedSchemeId }"
+                @click="selectSavedScheme(scheme)"
+              >
+                <el-image :src="scheme.image" fit="cover"></el-image>
+                <div>
+                  <strong>{{ scheme.title }}</strong>
+                  <span>{{ scheme.style || "未填写风格" }}</span>
+                </div>
+                <el-button size="small" text type="danger" @click.stop="removeFavorite(scheme)">删除</el-button>
+              </button>
+            </div>
+            <el-empty v-else description="暂无收藏方案" :image-size="64"></el-empty>
           </div>
 
           <div class="history-block">
@@ -288,6 +361,7 @@
           </div>
         </aside>
       </main>
+      </template>
     </div>
 
     <script src="vendor/vue.global.prod.js"></script>
