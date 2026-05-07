@@ -109,6 +109,16 @@ createApp({
       history: JSON.parse(localStorage.getItem("home-design-history") || "[]"),
       recordCache: {},
       selectedRecord: null,
+      imagePreview: {
+        visible: false,
+        title: "",
+        url: "",
+      },
+      comparePreview: {
+        visible: false,
+        draftUrl: "",
+        resultUrl: "",
+      },
       recordStyleFilter: "",
       project: {
         name: "青禾里 120㎡ 家装改造",
@@ -352,6 +362,31 @@ createApp({
     reloadBackend() {
       this.loadHealth();
       this.loadPresets();
+    },
+
+    previewImage(url, title = "图片预览") {
+      if (!url) return;
+      this.imagePreview = {
+        visible: true,
+        title,
+        url,
+      };
+    },
+
+    canCompareRecord(record = this.selectedRecord) {
+      return Boolean(record?.draft_image_url && record?.result_image_url);
+    },
+
+    compareRecordImages(record = this.selectedRecord) {
+      if (!this.canCompareRecord(record)) {
+        ElMessage.warning("当前记录缺少底稿或结果图，无法对比");
+        return;
+      }
+      this.comparePreview = {
+        visible: true,
+        draftUrl: record.draft_image_url,
+        resultUrl: record.result_image_url,
+      };
     },
 
     async loadHealth() {
