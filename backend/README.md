@@ -30,6 +30,30 @@ cp .env.example .env
 
 > For local dev, use a tunneling tool (e.g. ngrok) and set `PUBLIC_BASE_URL` to the tunnel URL.
 
+If you want to keep the backend on your local computer but expose uploaded images from a cloud server, configure SFTP uploads:
+
+```env
+REMOTE_UPLOAD_ENABLED=true
+REMOTE_UPLOAD_HOST=your-server-ip
+REMOTE_UPLOAD_PORT=22
+REMOTE_UPLOAD_USER=root
+REMOTE_UPLOAD_PASSWORD=
+REMOTE_UPLOAD_KEY_PATH=
+REMOTE_UPLOAD_DIR=/home/home-design/uploads
+REMOTE_PUBLIC_BASE_URL=http://your-server-ip/uploads
+```
+
+On the server, create the directory and expose it through Nginx:
+
+```nginx
+location /uploads/ {
+    alias /home/home-design/uploads/;
+    autoindex off;
+}
+```
+
+With this enabled, `/api/v1/assets/upload` still keeps a local copy for preview, but returns the cloud-server URL for image generation.
+
 3) Install deps and run:
 
 ```powershell

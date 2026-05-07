@@ -6,13 +6,14 @@ import hmac
 import secrets
 import sqlite3
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 from .models import (
     AssetUploadResponse,
@@ -62,6 +63,64 @@ def _safe_filename(name: str) -> str:
     if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
         suffix = ".png"
     return f"{stem}-{uuid.uuid4().hex[:10]}{suffix}"
+
+
+def _sftp_mkdirs(sftp: object, remote_dir: str) -> None:
+    current = ""
+    for part in PurePosixPath(remote_dir).parts:
+        if part == "/":
+            current = "/"
+            continue
+        current = str(PurePosixPath(current) / part) if current else part
+        try:
+            sftp.stat(current)
+        except OSError:
+            sftp.mkdir(current)
+
+
+def _upload_file_to_remote(local_path: Path, filename: str) -> str:
+    if not settings.remote_upload_host.strip():
+        raise RuntimeError("REMOTE_UPLOAD_HOST is required when REMOTE_UPLOAD_ENABLED=true")
+    if not settings.remote_upload_user.strip():
+        raise RuntimeError("REMOTE_UPLOAD_USER is required when REMOTE_UPLOAD_ENABLED=true")
+    if not settings.remote_upload_dir.strip():
+        raise RuntimeError("REMOTE_UPLOAD_DIR is required when REMOTE_UPLOAD_ENABLED=true")
+    if not settings.remote_public_base_url.strip().startswith(("http://", "https://")):
+        raise RuntimeError("REMOTE_PUBLIC_BASE_URL must be an http(s) URL when REMOTE_UPLOAD_ENABLED=true")
+
+    try:
+        import paramiko
+    except ImportError as exc:
+        raise RuntimeError("paramiko is required for remote uploads. Run: pip install -r requirements.txt") from exc
+
+    remote_dir = str(PurePosixPath(settings.remote_upload_dir))
+    remote_path = str(PurePosixPath(remote_dir) / filename)
+    key_path = settings.remote_upload_key_path.strip()
+    password = settings.remote_upload_password or None
+
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        client.connect(
+            hostname=settings.remote_upload_host.strip(),
+            port=settings.remote_upload_port,
+            username=settings.remote_upload_user.strip(),
+            password=password,
+            key_filename=str(Path(key_path).expanduser()) if key_path else None,
+            timeout=settings.remote_upload_timeout_s,
+            banner_timeout=settings.remote_upload_timeout_s,
+            auth_timeout=settings.remote_upload_timeout_s,
+        )
+        sftp = client.open_sftp()
+        try:
+            _sftp_mkdirs(sftp, remote_dir)
+            sftp.put(str(local_path), remote_path)
+        finally:
+            sftp.close()
+    finally:
+        client.close()
+
+    return f"{settings.remote_public_base_url.rstrip('/')}/{filename}"
 
 def _extract_task_id(resp: object) -> str | None:
     """
@@ -283,7 +342,13 @@ async def upload_asset(
     local_url = f"/uploads/{safe_name}"
     public_url = settings.public_base_url.rstrip("/") + local_url
     warning = None
-    if settings.public_base_url.startswith("http://localhost") or settings.public_base_url.startswith("http://127.0.0.1"):
+
+    if settings.remote_upload_enabled:
+        try:
+            public_url = await run_in_threadpool(_upload_file_to_remote, target, safe_name)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Remote upload failed: {exc}") from exc
+    elif settings.public_base_url.startswith("http://localhost") or settings.public_base_url.startswith("http://127.0.0.1"):
         warning = "For real NanoBanana calls, set PUBLIC_BASE_URL to a public tunnel URL so the API can fetch uploaded images."
 
     return AssetUploadResponse(filename=safe_name, url=public_url, local_url=local_url, warning=warning)

@@ -15,5 +15,15 @@ class Settings(BaseSettings):
     frontend_dir: str = "../frontend"
     max_upload_mb: int = 12
 
+    remote_upload_enabled: bool = False
+    remote_upload_host: str = ""
+    remote_upload_port: int = 22
+    remote_upload_user: str = ""
+    remote_upload_password: str = ""
+    remote_upload_key_path: str = ""
+    remote_upload_dir: str = ""
+    remote_public_base_url: str = ""
+    remote_upload_timeout_s: float = 20.0
+
 
 settings = Settings()
