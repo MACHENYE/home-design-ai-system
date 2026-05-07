@@ -13,8 +13,6 @@ const defaultPresets = {
   styles: ["现代简约", "新中式", "北欧", "中古风", "奶油风", "侘寂风", "工业风", "轻奢"],
   colors: ["暖白+原木", "黑白灰", "米色+胡桃木", "低饱和莫兰迪", "奶油色+浅咖", "深色沉稳"],
   materials: ["原木", "微水泥", "大理石", "藤编", "金属线条", "布艺", "皮革", "玻璃"],
-  culturalElements: ["无", "桃花坞木版年画", "宋式雅韵", "岭南纹样", "青花瓷元素", "敦煌色彩"],
-  budgetLevels: ["经济型", "标准型", "品质型", "高端定制"],
 };
 
 const quickPresets = [
@@ -24,7 +22,6 @@ const quickPresets = [
     room: "客厅",
     color: "奶油色+浅咖",
     material: "布艺",
-    budget: "品质型",
     prompt:
       "保留客厅结构，提升空间通透感，加入柔和奶油色墙面、圆角家具和温暖灯带，整体干净舒适。",
     desc: "柔和、明亮、适合年轻家庭",
@@ -35,7 +32,6 @@ const quickPresets = [
     room: "客厅",
     color: "米色+胡桃木",
     material: "原木",
-    budget: "高端定制",
     prompt:
       "保留空间边界，生成克制雅致的新中式会客区，强调木质格栅、留白与东方秩序感。",
     desc: "稳重、雅致、结构清晰",
@@ -46,7 +42,6 @@ const quickPresets = [
     room: "卧室",
     color: "暖白+原木",
     material: "原木",
-    budget: "标准型",
     prompt:
       "保留卧室结构，呈现自然松弛的北欧卧室，光线柔和，床品简洁，适度加入收纳。",
     desc: "轻盈、自然、居住感强",
@@ -57,7 +52,6 @@ const quickPresets = [
     room: "书房",
     color: "深色沉稳",
     material: "微水泥",
-    budget: "品质型",
     prompt:
       "保留书房结构，生成克制安静的侘寂空间，突出材质肌理、灰调光影和低干扰工作氛围。",
     desc: "安静、克制、材质感强",
@@ -95,8 +89,6 @@ createApp({
       presets: { ...defaultPresets },
       quickPresets,
       promptChips,
-      draftUrl: "",
-      refUrl: "",
       draftAsset: null,
       refAsset: null,
       draftPreview: "",
@@ -132,8 +124,6 @@ createApp({
         design_style: "现代简约",
         color_preference: "暖白+原木",
         material_preference: "原木",
-        cultural_element: "无",
-        budget_level: "标准型",
         keep_structure: true,
         mask_url: null,
         negative_prompt: "不要改变门窗位置，不要生成不合理家具比例",
@@ -168,22 +158,21 @@ createApp({
       if (this.maskDirty) return 4;
       if (this.currentTaskId) return 3;
       if (this.form.prompt.trim() && (this.form.room_type || this.form.design_style)) return 2;
-      if (this.draftAsset || this.refAsset || this.draftUrl || this.refUrl) return 1;
+      if (this.draftAsset || this.refAsset) return 1;
       return 0;
     },
 
     structureScore() {
       let score = this.form.keep_structure ? 84 : 62;
-      if (this.draftAsset || this.draftUrl) score += 8;
+      if (this.draftAsset) score += 8;
       if (this.maskDirty) score += 4;
       return Math.min(score, 98);
     },
 
     styleScore() {
       let score = 72;
-      if (this.refAsset || this.refUrl) score += 10;
+      if (this.refAsset) score += 10;
       if (this.form.design_style) score += 8;
-      if (this.form.cultural_element && this.form.cultural_element !== "无") score += 4;
       return Math.min(score, 96);
     },
 
@@ -191,8 +180,6 @@ createApp({
       let score = 66;
       if (this.form.material_preference) score += 10;
       if (this.form.color_preference) score += 6;
-      if (this.form.budget_level === "高端定制") score += 10;
-      if (this.form.budget_level === "品质型") score += 6;
       return Math.min(score, 94);
     },
 
@@ -233,7 +220,7 @@ createApp({
         {
           title: "生成建议",
           text:
-            this.refAsset || this.refUrl
+            this.refAsset
               ? "已经具备风格参考图，当前更适合做高保真风格迁移。"
               : "还没有参考图时，建议在需求描述里多写灯光、材质和氛围关键词。",
         },
@@ -392,8 +379,6 @@ createApp({
         ["design_style", this.presets.styles],
         ["color_preference", this.presets.colors],
         ["material_preference", this.presets.materials],
-        ["cultural_element", this.presets.culturalElements],
-        ["budget_level", this.presets.budgetLevels],
       ];
       for (const [key, list] of defaults) {
         if (!this.form[key] && list?.length) this.form[key] = list[0];
@@ -416,12 +401,6 @@ createApp({
       } catch (err) {
         ElMessage.error(err.message);
       }
-    },
-
-    useUrl(value, type) {
-      const url = value.trim();
-      if (!url) return;
-      this.setAsset(type, url, url);
     },
 
     setAsset(type, url, previewUrl) {
@@ -536,7 +515,6 @@ createApp({
       this.form.design_style = preset.style;
       this.form.color_preference = preset.color;
       this.form.material_preference = preset.material;
-      this.form.budget_level = preset.budget;
       this.form.prompt = preset.prompt;
       ElMessage.success(`已套用「${preset.name}」模板`);
     },
@@ -633,6 +611,67 @@ createApp({
       }
       if ([3, 4].includes(status)) {
         window.clearInterval(this.pollTimer);
+      }
+    },
+
+    applyRecordAssets(record) {
+      if (!record) return;
+      if (record.draft_image_url) {
+        this.draftAsset = { url: record.draft_image_url, previewUrl: record.draft_image_url };
+        this.draftPreview = record.draft_image_url;
+        this.draftState = "已加载";
+        nextTick(() => this.drawDraftToCanvas(record.draft_image_url));
+      } else {
+        this.draftAsset = null;
+        this.draftPreview = "";
+        this.draftState = "未上传";
+        this.clearMask();
+      }
+
+      if (record.reference_image_url) {
+        this.refAsset = { url: record.reference_image_url, previewUrl: record.reference_image_url };
+        this.refPreview = record.reference_image_url;
+        this.refState = "已加载";
+      } else {
+        this.refAsset = null;
+        this.refPreview = "";
+        this.refState = "未上传";
+      }
+    },
+
+    resultFilename() {
+      const taskPart = this.currentTaskId ? this.shortTaskId(this.currentTaskId).replace(/\W+/g, "-") : Date.now();
+      return `home-design-${taskPart}.png`;
+    },
+
+    async downloadResultImage() {
+      if (!this.resultImage) {
+        ElMessage.warning("当前还没有可下载的结果图");
+        return;
+      }
+
+      try {
+        const res = await fetch(this.resultImage, { mode: "cors" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = blobUrl;
+        link.download = this.resultFilename();
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(blobUrl);
+        ElMessage.success("图片已开始下载");
+      } catch (err) {
+        const link = document.createElement("a");
+        link.href = this.resultImage;
+        link.target = "_blank";
+        link.rel = "noopener";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        ElMessage.warning("浏览器无法直接下载，已打开原图链接");
       }
     },
 
@@ -781,6 +820,7 @@ createApp({
       this.recordCache = { ...this.recordCache, [record.task_id]: record };
       if (record.task_id === this.currentTaskId) {
         this.selectedRecord = record;
+        this.applyRecordAssets(record);
       }
     },
 
@@ -849,6 +889,12 @@ createApp({
       this.currentTaskId = taskId;
       this.selectedSavedSchemeId = "";
       this.activeTab = "archive";
+      const cached = this.recordCache[taskId];
+      if (cached) {
+        this.selectedRecord = cached;
+        this.applyRecordAssets(cached);
+        if (cached.result_image_url) this.resultImage = cached.result_image_url;
+      }
       this.refreshTask(taskId, true);
       this.loadDesignRecord(taskId, true);
     },

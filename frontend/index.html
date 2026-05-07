@@ -94,17 +94,6 @@
             </el-upload>
           </div>
 
-          <details class="minor-options">
-            <summary>使用图片 URL</summary>
-            <el-form label-position="top" class="form-grid compact-form">
-              <el-form-item label="底稿 URL">
-                <el-input v-model="draftUrl" clearable placeholder="https://..." @change="useUrl(draftUrl, 'draft')"></el-input>
-              </el-form-item>
-              <el-form-item label="参考 URL">
-                <el-input v-model="refUrl" clearable placeholder="https://..." @change="useUrl(refUrl, 'ref')"></el-input>
-              </el-form-item>
-            </el-form>
-          </details>
 
           <div class="section-divider"></div>
 
@@ -170,18 +159,6 @@
 
             <details class="minor-options">
               <summary>高级设置</summary>
-              <div class="form-grid">
-                <el-form-item label="文化元素">
-                  <el-select v-model="form.cultural_element" filterable>
-                    <el-option v-for="item in presets.culturalElements" :key="item" :label="item" :value="item"></el-option>
-                  </el-select>
-                </el-form-item>
-                <el-form-item label="预算等级">
-                  <el-select v-model="form.budget_level" filterable>
-                    <el-option v-for="item in presets.budgetLevels" :key="item" :label="item" :value="item"></el-option>
-                  </el-select>
-                </el-form-item>
-              </div>
               <el-form-item label="排除项">
                 <el-input v-model="form.negative_prompt" clearable></el-input>
               </el-form-item>
@@ -228,7 +205,10 @@
           </div>
 
           <div class="result-actions">
-            <el-button type="primary" plain :disabled="!resultImage" @click="saveCurrentScheme">收藏当前方案</el-button>
+            <div class="inline-actions">
+              <el-button type="primary" plain :disabled="!resultImage" @click="saveCurrentScheme">收藏当前方案</el-button>
+              <el-button plain :disabled="!resultImage" @click="downloadResultImage">下载图片</el-button>
+            </div>
             <el-tag effect="plain">{{ currentTaskId ? shortTaskId(currentTaskId) : "未开始" }}</el-tag>
           </div>
 

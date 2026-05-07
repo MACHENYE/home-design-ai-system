@@ -19,8 +19,6 @@ def build_home_design_prompt(req: GenerateRequest) -> str:
         ("Design style", req.design_style),
         ("Preferred colors", req.color_preference),
         ("Preferred materials", req.material_preference),
-        ("Budget level", req.budget_level),
-        ("Cultural element", req.cultural_element),
         ("User request", req.prompt),
         ("Additional notes", req.notes),
     ]
