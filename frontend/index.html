@@ -71,29 +71,48 @@
           <div class="upload-grid">
             <el-upload
               class="upload-box"
+              :class="{ 'has-image': Boolean(draftPreview) }"
               drag
               :show-file-list="false"
               :auto-upload="false"
               accept="image/*"
               :on-change="(file) => handleFile(file, 'draft')"
             >
-              <strong>设计底稿</strong>
-              <span>{{ draftState }}</span>
+              <div v-if="draftPreview" class="upload-preview-content">
+                <img :src="draftPreview" alt="draft" />
+                <div>
+                  <strong>&#35774;&#35745;&#24213;&#31295;</strong>
+                  <span>{{ draftState }}</span>
+                </div>
+              </div>
+              <template v-else>
+                <strong>&#35774;&#35745;&#24213;&#31295;</strong>
+                <span>{{ draftState }}</span>
+              </template>
             </el-upload>
 
             <el-upload
               class="upload-box"
+              :class="{ 'has-image': Boolean(refPreview) }"
               drag
               :show-file-list="false"
               :auto-upload="false"
               accept="image/*"
               :on-change="(file) => handleFile(file, 'ref')"
             >
-              <strong>风格参考</strong>
-              <span>{{ refState }}</span>
+              <div v-if="refPreview" class="upload-preview-content">
+                <img :src="refPreview" alt="reference" />
+                <div>
+                  <strong>&#39118;&#26684;&#21442;&#32771;</strong>
+                  <span>{{ refState }}</span>
+                </div>
+              </div>
+              <template v-else>
+                <strong>&#39118;&#26684;&#21442;&#32771;</strong>
+                <span>{{ refState }}</span>
+              </template>
             </el-upload>
           </div>
-
 
           <div class="section-divider"></div>
 
@@ -110,6 +129,7 @@
               :key="preset.name"
               type="button"
               class="preset-chip"
+              :class="{ active: isPresetActive(preset) }"
               @click="applyQuickPreset(preset)"
             >
               <strong>{{ preset.name }}</strong>
@@ -197,7 +217,7 @@
           <div class="result-layout">
             <div class="result-main-column">
               <div class="result-box">
-                <el-image v-if="resultImage" :src="resultImage" fit="contain" class="result-image"></el-image>
+                <el-image v-if="displayResultImage" :src="displayResultImage" fit="contain" class="result-image"></el-image>
                 <div v-else-if="isGenerating" class="generating-state">
                   <div class="generating-loader"></div>
                   <strong>正在生成设计图</strong>
@@ -205,26 +225,34 @@
                 </div>
                 <el-empty v-else description="生成后的设计图会显示在这里"></el-empty>
               </div>
+              <el-alert
+                v-if="isGenerating && displayResultImage"
+                class="generating-inline-alert"
+                type="info"
+                :closable="false"
+                show-icon
+                :title="`新方案仍在生成中：${taskStateText}`"
+              ></el-alert>
 
               <div class="result-actions">
                 <div class="inline-actions">
-                  <el-button type="primary" plain :disabled="!resultImage" @click="saveCurrentScheme">收藏当前方案</el-button>
-                  <el-button plain :disabled="!resultImage" @click="downloadResultImage">下载图片</el-button>
+                  <el-button type="primary" plain :disabled="!displayResultImage" @click="saveCurrentScheme">收藏当前方案</el-button>
+                  <el-button plain :disabled="!displayResultImage" @click="downloadResultImage">下载图片</el-button>
                 </div>
                 <el-tag effect="plain">{{ currentTaskId ? shortTaskId(currentTaskId) : "未开始" }}</el-tag>
               </div>
 
               <div class="preview-grid">
-                <div class="preview-card">
-                  <label>底稿</label>
-                  <el-image v-if="draftPreview" :src="draftPreview" fit="cover"></el-image>
-                  <span v-else>未上传</span>
-                </div>
-                <div class="preview-card">
-                  <label>参考</label>
-                  <el-image v-if="refPreview" :src="refPreview" fit="cover"></el-image>
-                  <span v-else>可选</span>
-                </div>
+              <div class="preview-card">
+                <label>底稿</label>
+                  <el-image v-if="displayDraftPreview" :src="displayDraftPreview" fit="cover"></el-image>
+                <span v-else>未上传</span>
+              </div>
+              <div class="preview-card">
+                <label>参考</label>
+                  <el-image v-if="displayRefPreview" :src="displayRefPreview" fit="cover"></el-image>
+                <span v-else>可选</span>
+              </div>
               </div>
             </div>
 
@@ -270,7 +298,7 @@
                   </div>
                   <div class="url-list">
                     <div v-if="selectedRecord.draft_image_url">
-                      <label>底稿地址</label>
+                      <label>底稿图片</label>
                       <button type="button" @click="previewImage(selectedRecord.draft_image_url, '底稿')">查看</button>
                     </div>
                     <div v-if="selectedRecord.reference_image_url">
@@ -278,7 +306,7 @@
                       <button type="button" @click="previewImage(selectedRecord.reference_image_url, '参考图')">查看</button>
                     </div>
                     <div v-if="selectedRecord.result_image_url">
-                      <label>结果图地址</label>
+                      <label>生成结果</label>
                       <button type="button" @click="previewImage(selectedRecord.result_image_url, '结果图')">查看</button>
                     </div>
                   </div>
@@ -336,11 +364,11 @@
               </div>
               <div v-if="history.length" class="history-list">
                 <button
-                  v-for="item in history.slice(0, 5)"
+                  v-for="item in history"
                   :key="item.taskId"
                   type="button"
                   class="history-item"
-                  :class="{ active: item.taskId === currentTaskId }"
+                  :class="{ active: item.taskId === (selectedHistoryTaskId || currentTaskId) }"
                   @click="openHistory(item.taskId)"
                 >
                   <strong>{{ shortTaskId(item.taskId) }}</strong>

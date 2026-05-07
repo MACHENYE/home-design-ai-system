@@ -101,6 +101,7 @@ createApp({
       brushSize: 28,
       submitting: false,
       currentTaskId: "",
+      generatingTaskId: "",
       taskStateText: "等待提交",
       resultImage: "",
       pollTimer: null,
@@ -109,6 +110,7 @@ createApp({
       history: JSON.parse(localStorage.getItem("home-design-history") || "[]"),
       recordCache: {},
       selectedRecord: null,
+      selectedHistoryTaskId: "",
       imagePreview: {
         visible: false,
         title: "",
@@ -211,8 +213,35 @@ createApp({
       return this.savedSchemes.find((item) => item.id === this.selectedSavedSchemeId) || null;
     },
 
+    displayDraftPreview() {
+      if (this.selectedHistoryTaskId) {
+        return this.selectedRecord?.task_id === this.selectedHistoryTaskId
+          ? this.selectedRecord.draft_image_url || ""
+          : "";
+      }
+      return this.draftPreview;
+    },
+
+    displayRefPreview() {
+      if (this.selectedHistoryTaskId) {
+        return this.selectedRecord?.task_id === this.selectedHistoryTaskId
+          ? this.selectedRecord.reference_image_url || ""
+          : "";
+      }
+      return this.refPreview;
+    },
+
+    displayResultImage() {
+      if (this.selectedHistoryTaskId) {
+        return this.selectedRecord?.task_id === this.selectedHistoryTaskId
+          ? this.selectedRecord.result_image_url || ""
+          : "";
+      }
+      return this.resultImage;
+    },
+
     isGenerating() {
-      return this.submitting || (Boolean(this.currentTaskId) && !this.resultImage && !this.taskStateText.includes("失败"));
+      return this.submitting || (Boolean(this.generatingTaskId) && !this.taskStateText.includes("失败"));
     },
 
     currentInsights() {
@@ -319,6 +348,7 @@ createApp({
       this.savedSchemes = [];
       this.recordCache = {};
       this.selectedRecord = null;
+      this.selectedHistoryTaskId = "";
       nextTick(() => this.setupCanvas());
       this.loadDesignRecords(false);
       this.loadFavorites(false);
@@ -340,12 +370,14 @@ createApp({
       this.authToken = "";
       this.currentUser = null;
       this.currentTaskId = "";
+      this.generatingTaskId = "";
       this.taskStateText = "等待提交";
       this.resultImage = "";
       this.history = [];
       this.savedSchemes = [];
       this.recordCache = {};
       this.selectedRecord = null;
+      this.selectedHistoryTaskId = "";
       localStorage.removeItem("home-design-token");
     },
 
@@ -545,6 +577,15 @@ createApp({
       this.form.prompt = trimmed ? `${trimmed}，${text}` : text;
     },
 
+    isPresetActive(preset) {
+      return (
+        this.form.room_type === preset.room &&
+        this.form.design_style === preset.style &&
+        this.form.color_preference === preset.color &&
+        this.form.material_preference === preset.material
+      );
+    },
+
     applyQuickPreset(preset) {
       this.form.room_type = preset.room;
       this.form.design_style = preset.style;
@@ -563,6 +604,14 @@ createApp({
       this.submitting = true;
       this.taskStateText = "提交中";
       this.project.stage = "方案生成";
+      this.currentTaskId = "";
+      this.generatingTaskId = "";
+      this.resultImage = "";
+      this.selectedRecord = null;
+      this.selectedHistoryTaskId = "";
+      this.selectedSavedSchemeId = "";
+      this.imagePreview = { visible: false, title: "", url: "" };
+      this.comparePreview = { visible: false, draftUrl: "", resultUrl: "" };
 
       try {
         const imageUrls = [];
@@ -591,6 +640,7 @@ createApp({
         });
 
         this.currentTaskId = submitted.task_id;
+        this.generatingTaskId = submitted.task_id;
         this.taskStateText = `处理中 · ${this.shortTaskId(submitted.task_id)}`;
         this.addHistory(submitted.task_id, "处理中", Date.now());
         await this.refreshTask(submitted.task_id, true);
@@ -610,7 +660,8 @@ createApp({
     },
 
     refreshCurrentTask() {
-      if (this.currentTaskId) this.refreshTask(this.currentTaskId, true);
+      const taskId = this.generatingTaskId || this.currentTaskId;
+      if (taskId) this.refreshTask(taskId, true);
     },
 
     async refreshTask(taskId, manual) {
@@ -632,11 +683,14 @@ createApp({
 
     renderTask(task) {
       const status = Number(task.status);
-      this.currentTaskId = task.task_id;
-      this.taskStateText = `${statusText[status] || "未知"} · ${this.shortTaskId(task.task_id)}`;
+      const isPrimaryTask = !this.generatingTaskId || task.task_id === this.generatingTaskId;
+      if (isPrimaryTask) {
+        this.currentTaskId = task.task_id;
+        this.taskStateText = `${statusText[status] || "未知"} · ${this.shortTaskId(task.task_id)}`;
+      }
       this.addHistory(task.task_id, statusText[status] || "未知", task.created_at);
 
-      if (task.result_image_url) {
+      if (isPrimaryTask && task.result_image_url) {
         this.resultImage = task.result_image_url;
         this.activeTab = "studio";
       }
@@ -645,48 +699,43 @@ createApp({
         ElMessage.error(task.error_message);
       }
       if ([3, 4].includes(status)) {
+        if (task.task_id === this.generatingTaskId) {
+          this.generatingTaskId = "";
+        }
         window.clearInterval(this.pollTimer);
       }
     },
 
     applyRecordAssets(record) {
       if (!record) return;
-      if (record.draft_image_url) {
-        this.draftAsset = { url: record.draft_image_url, previewUrl: record.draft_image_url };
-        this.draftPreview = record.draft_image_url;
-        this.draftState = "已加载";
-        nextTick(() => this.drawDraftToCanvas(record.draft_image_url));
-      } else {
-        this.draftAsset = null;
-        this.draftPreview = "";
-        this.draftState = "未上传";
-        this.clearMask();
-      }
+      this.selectedRecord = record;
+    },
 
-      if (record.reference_image_url) {
-        this.refAsset = { url: record.reference_image_url, previewUrl: record.reference_image_url };
-        this.refPreview = record.reference_image_url;
-        this.refState = "已加载";
-      } else {
-        this.refAsset = null;
-        this.refPreview = "";
-        this.refState = "未上传";
-      }
+    clearInputAssets() {
+      this.draftAsset = null;
+      this.refAsset = null;
+      this.draftPreview = "";
+      this.refPreview = "";
+      this.draftState = "未上传";
+      this.refState = "未上传";
+      this.clearMask();
     },
 
     resultFilename() {
-      const taskPart = this.currentTaskId ? this.shortTaskId(this.currentTaskId).replace(/\W+/g, "-") : Date.now();
+      const sourceTaskId = this.selectedHistoryTaskId || this.currentTaskId;
+      const taskPart = sourceTaskId ? this.shortTaskId(sourceTaskId).replace(/\W+/g, "-") : Date.now();
       return `home-design-${taskPart}.png`;
     },
 
     async downloadResultImage() {
-      if (!this.resultImage) {
+      const imageUrl = this.displayResultImage;
+      if (!imageUrl) {
         ElMessage.warning("当前还没有可下载的结果图");
         return;
       }
 
       try {
-        const res = await fetch(this.resultImage, { mode: "cors" });
+        const res = await fetch(imageUrl, { mode: "cors" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const blob = await res.blob();
         const blobUrl = URL.createObjectURL(blob);
@@ -700,7 +749,7 @@ createApp({
         ElMessage.success("图片已开始下载");
       } catch (err) {
         const link = document.createElement("a");
-        link.href = this.resultImage;
+        link.href = imageUrl;
         link.target = "_blank";
         link.rel = "noopener";
         document.body.appendChild(link);
@@ -711,7 +760,8 @@ createApp({
     },
 
     async saveCurrentScheme() {
-      if (!this.resultImage) {
+      const imageUrl = this.displayResultImage;
+      if (!imageUrl) {
         ElMessage.warning("当前还没有可收藏的结果图");
         return;
       }
@@ -721,7 +771,7 @@ createApp({
         taskId: this.currentTaskId || null,
         title: `${this.form.room_type} · ${this.form.design_style}`,
         style: `${this.form.color_preference} / ${this.form.material_preference}`,
-        image: this.resultImage,
+        image: imageUrl,
         time: new Date().toLocaleString(),
       };
 
@@ -741,6 +791,7 @@ createApp({
         this.selectedSavedSchemeId = normalized.id;
         this.currentTaskId = "";
         this.selectedRecord = null;
+        this.selectedHistoryTaskId = "";
         this.project.stage = "方案比对";
         ElMessage.success("已收藏当前方案");
       } catch (err) {
@@ -752,6 +803,7 @@ createApp({
       this.selectedSavedSchemeId = scheme.id;
       this.currentTaskId = "";
       this.selectedRecord = null;
+      this.selectedHistoryTaskId = "";
       this.compareMode = "result-saved";
       this.activeTab = "compare";
       this.resultImage = scheme.image;
@@ -853,7 +905,10 @@ createApp({
     cacheRecord(record) {
       if (!record?.task_id) return;
       this.recordCache = { ...this.recordCache, [record.task_id]: record };
-      if (record.task_id === this.currentTaskId) {
+      const shouldSelect =
+        record.task_id === this.selectedHistoryTaskId ||
+        (!this.selectedHistoryTaskId && record.task_id === this.currentTaskId);
+      if (shouldSelect) {
         this.selectedRecord = record;
         this.applyRecordAssets(record);
       }
@@ -879,10 +934,16 @@ createApp({
       try {
         const record = await this.request(`/api/v1/design/records/${encodeURIComponent(taskId)}`);
         this.cacheRecord(record);
-        if (record.result_image_url) this.resultImage = record.result_image_url;
+        if (taskId === this.selectedHistoryTaskId) {
+          this.selectedRecord = record;
+          this.applyRecordAssets(record);
+        }
+        if (!this.generatingTaskId && record.result_image_url) this.resultImage = record.result_image_url;
         if (showMessage) ElMessage.success("记录详情已加载");
       } catch (err) {
-        this.selectedRecord = this.recordCache[taskId] || null;
+        if (taskId === this.selectedHistoryTaskId) {
+          this.selectedRecord = this.recordCache[taskId] || null;
+        }
         if (showMessage) ElMessage.error(err.message);
       }
     },
@@ -899,6 +960,7 @@ createApp({
         this.history = this.history.filter((item) => item.taskId !== this.currentTaskId);
         this.saveHistory();
         this.selectedRecord = null;
+        this.selectedHistoryTaskId = "";
         this.currentTaskId = "";
         this.taskStateText = "等待提交";
         this.resultImage = "";
@@ -921,16 +983,23 @@ createApp({
     },
 
     openHistory(taskId) {
-      this.currentTaskId = taskId;
       this.selectedSavedSchemeId = "";
+      this.selectedHistoryTaskId = taskId;
       this.activeTab = "archive";
+      this.clearInputAssets();
+      this.selectedRecord = this.recordCache[taskId] || null;
+      if (!this.generatingTaskId) {
+        this.currentTaskId = taskId;
+      }
       const cached = this.recordCache[taskId];
       if (cached) {
         this.selectedRecord = cached;
         this.applyRecordAssets(cached);
-        if (cached.result_image_url) this.resultImage = cached.result_image_url;
+        if (!this.generatingTaskId && cached.result_image_url) this.resultImage = cached.result_image_url;
       }
-      this.refreshTask(taskId, true);
+      if (!this.generatingTaskId) {
+        this.refreshTask(taskId, true);
+      }
       this.loadDesignRecord(taskId, true);
     },
   },
