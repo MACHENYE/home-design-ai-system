@@ -1,4 +1,4 @@
-:root {
+﻿:root {
   --bg: #f5f7f8;
   --panel: #ffffff;
   --panel-soft: #f8fafb;
@@ -825,3 +825,4 @@ body {
     min-height: 300px;
   }
 }
+

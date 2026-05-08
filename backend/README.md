@@ -63,6 +63,30 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
+## Frontend
+
+The frontend is now a Vite + Vue 3 + Element Plus project in `../frontend`.
+
+For development, run the backend first, then start Vite:
+
+```powershell
+cd ..\frontend
+npm install
+npm run dev
+```
+
+Open `http://127.0.0.1:5173`. Vite proxies `/api`, `/healthz`, and `/uploads`
+to the backend.
+
+For backend-hosted preview or deployment, build the frontend:
+
+```powershell
+cd ..\frontend
+npm run build
+```
+
+The backend serves `../frontend/dist` at `/app/` when that directory exists.
+
 ## API
 
 - `GET /` Frontend app

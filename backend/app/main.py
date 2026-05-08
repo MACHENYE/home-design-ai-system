@@ -214,6 +214,7 @@ client = NanoBananaClient(base_url=settings.nanobanana_base_url, api_key=setting
 uploads_path = Path(settings.uploads_dir)
 uploads_path.mkdir(parents=True, exist_ok=True)
 frontend_path = Path(settings.frontend_dir)
+frontend_static_path = frontend_path / "dist" if (frontend_path / "dist").exists() else frontend_path
 
 
 def _hash_password(password: str, salt: str | None = None) -> str:
@@ -592,5 +593,5 @@ async def nanobanana_callback(cb: dict[str, object]) -> dict[str, str]:
 
 
 app.mount("/uploads", StaticFiles(directory=str(uploads_path)), name="uploads")
-if frontend_path.exists():
-    app.mount("/app", StaticFiles(directory=str(frontend_path), html=True), name="frontend")
+if frontend_static_path.exists():
+    app.mount("/app", StaticFiles(directory=str(frontend_static_path), html=True), name="frontend")

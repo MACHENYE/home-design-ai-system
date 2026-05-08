@@ -1,5 +1,80 @@
-const { createApp, nextTick } = Vue;
-const { ElMessage } = ElementPlus;
+﻿<template>
+  <div v-cloak>
+    <auth-panel
+      v-if="!isAuthenticated"
+      v-model:auth-mode="authMode"
+      :auth-form="authForm"
+      :auth-loading="authLoading"
+      @submit-auth="submitAuth"
+    />
+    <template v-else>
+      <app-header :current-user="currentUser" @logout="logout" />
+      <main class="workspace">
+        <control-panel
+          ref="controlPanelRef"
+          :draft-preview="draftPreview"
+          :draft-state="draftState"
+          :ref-preview="refPreview"
+          :ref-state="refState"
+          :quick-presets="quickPresets"
+          :presets="presets"
+          :prompt-chips="promptChips"
+          :form="form"
+          :brush-size="brushSize"
+          :mask-dirty="maskDirty"
+          :mask-state="maskState"
+          :submitting="submitting"
+          :task-state-text="taskStateText"
+          :is-preset-active="isPresetActive"
+          @handle-file="handleFile"
+          @apply-quick-preset="applyQuickPreset"
+          @append-prompt="appendPrompt"
+          @submit-design="submitDesign"
+          @update:brush-size="brushSize = $event"
+          @update:mask-dirty="maskDirty = $event"
+          @update:mask-state="maskState = $event"
+        />
+        <result-panel
+          :display-result-image="displayResultImage"
+          :display-draft-preview="displayDraftPreview"
+          :display-ref-preview="displayRefPreview"
+          :is-generating="isGenerating"
+          :task-state-text="taskStateText"
+          :current-task-id="currentTaskId"
+          :selected-record="selectedRecord"
+          :saved-schemes="savedSchemes"
+          :selected-saved-scheme-id="selectedSavedSchemeId"
+          :history="history"
+          :selected-history-task-id="selectedHistoryTaskId"
+          :presets="presets"
+          :record-style-filter="recordStyleFilter"
+          :short-task-id="shortTaskId"
+          :can-compare-record="canCompareRecord"
+          @save-current-scheme="saveCurrentScheme"
+          @download-result-image="downloadResultImage"
+          @compare-record-images="compareRecordImages"
+          @delete-current-record="deleteCurrentRecord"
+          @preview-image="previewImage"
+          @load-favorites="loadFavorites"
+          @select-saved-scheme="selectSavedScheme"
+          @remove-favorite="removeFavorite"
+          @update:record-style-filter="recordStyleFilter = $event"
+          @load-design-records="loadDesignRecords"
+          @open-history="openHistory"
+        />
+      </main>
+      <image-dialogs v-model:image-preview="imagePreview" v-model:compare-preview="comparePreview" />
+    </template>
+  </div>
+</template>
+<script>
+import { nextTick } from "vue";
+import { ElMessage } from "element-plus";
+import AppHeader from "./components/AppHeader.vue";
+import AuthPanel from "./components/AuthPanel.vue";
+import ControlPanel from "./components/ControlPanel.vue";
+import ImageDialogs from "./components/ImageDialogs.vue";
+import ResultPanel from "./components/ResultPanel.vue";
 
 const statusText = {
   1: "已创建",
@@ -69,7 +144,15 @@ const promptChips = [
   "保留通行动线",
 ];
 
-createApp({
+export default {
+  components: {
+    AppHeader,
+    AuthPanel,
+    ControlPanel,
+    ImageDialogs,
+    ResultPanel,
+  },
+
   data() {
     return {
       apiBaseInput: window.location.protocol === "file:" ? "http://127.0.0.1:8000" : "",
@@ -97,7 +180,6 @@ createApp({
       refState: "未上传",
       maskState: "未绘制",
       maskDirty: false,
-      isDrawing: false,
       brushSize: 28,
       submitting: false,
       currentTaskId: "",
@@ -493,83 +575,24 @@ createApp({
     },
 
     setupCanvas() {
-      const canvas = this.$refs.maskCanvasRef;
-      if (!canvas) return;
-      if (canvas.dataset.bound === "true") return;
-      canvas.dataset.bound = "true";
-      const ctx = canvas.getContext("2d");
-      ctx.lineCap = "round";
-      ctx.lineJoin = "round";
-
-      canvas.addEventListener("pointerdown", (event) => {
-        this.isDrawing = true;
-        canvas.setPointerCapture(event.pointerId);
-        const p = this.canvasPoint(event);
-        ctx.beginPath();
-        ctx.moveTo(p.x, p.y);
-      });
-
-      canvas.addEventListener("pointermove", (event) => {
-        if (!this.isDrawing) return;
-        const p = this.canvasPoint(event);
-        ctx.strokeStyle = "rgba(0, 0, 0, 0.72)";
-        ctx.lineWidth = Number(this.brushSize);
-        ctx.lineTo(p.x, p.y);
-        ctx.stroke();
-        this.maskDirty = true;
-        this.maskState = "已绘制";
-      });
-
-      canvas.addEventListener("pointerup", () => {
-        this.isDrawing = false;
-      });
-
-      canvas.addEventListener("pointerleave", () => {
-        this.isDrawing = false;
-      });
-    },
-
-    canvasPoint(event) {
-      const canvas = this.$refs.maskCanvasRef;
-      const rect = canvas.getBoundingClientRect();
-      return {
-        x: ((event.clientX - rect.left) / rect.width) * canvas.width,
-        y: ((event.clientY - rect.top) / rect.height) * canvas.height,
-      };
+      this.$refs.controlPanelRef?.setupCanvas?.();
     },
 
     drawDraftToCanvas(url) {
-      const canvas = this.$refs.draftCanvasRef;
-      if (!canvas) return;
-      const ctx = canvas.getContext("2d");
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.onload = () => {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.fillStyle = "#f7f4ed";
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        const scale = Math.min(canvas.width / img.width, canvas.height / img.height);
-        const w = img.width * scale;
-        const h = img.height * scale;
-        const x = (canvas.width - w) / 2;
-        const y = (canvas.height - h) / 2;
-        ctx.globalAlpha = 0.78;
-        ctx.drawImage(img, x, y, w, h);
-        ctx.globalAlpha = 1;
-      };
-      img.src = url;
+      this.$refs.controlPanelRef?.drawDraftToCanvas?.(url);
     },
 
     clearMask() {
-      const canvas = this.$refs.maskCanvasRef;
-      if (!canvas) return;
-      canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
-      this.maskDirty = false;
-      this.maskState = "未绘制";
+      if (this.$refs.controlPanelRef?.clearMask) {
+        this.$refs.controlPanelRef.clearMask();
+      } else {
+        this.maskDirty = false;
+        this.maskState = "未绘制";
+      }
     },
 
-    canvasToBlob(canvas) {
-      return new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+    canvasToBlob() {
+      return this.$refs.controlPanelRef?.canvasToBlob?.();
     },
 
     appendPrompt(text) {
@@ -620,7 +643,7 @@ createApp({
 
         let maskUrl = null;
         if (this.maskDirty) {
-          const maskBlob = await this.canvasToBlob(this.$refs.maskCanvasRef);
+          const maskBlob = await this.canvasToBlob();
           const maskAsset = await this.uploadBlob(maskBlob, "mask.png", "image/png");
           maskUrl = maskAsset.url;
         }
@@ -1003,6 +1026,8 @@ createApp({
       this.loadDesignRecord(taskId, true);
     },
   },
-})
-  .use(ElementPlus)
-  .mount("#app");
+}
+</script>
+
+
+
