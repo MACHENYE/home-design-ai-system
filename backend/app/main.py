@@ -22,6 +22,7 @@ from starlette.concurrency import run_in_threadpool
 from .models import (
     AssetUploadResponse,
     AuthResponse,
+    DesignFeedbackRequest,
     DesignRecord,
     FavoriteScheme,
     FavoriteSchemeCreate,
@@ -408,6 +409,17 @@ def _rank_style_templates(
                 break
 
     templates = [StyleTemplate(**item) for item in selected]
+    for template in templates:
+        reasons: list[str] = []
+        if room_scores.get(template.room, 0) > 0:
+            reasons.append(f"空间偏好接近「{template.room}」")
+        if style_scores.get(template.style, 0) > 0:
+            reasons.append(f"历史或收藏中常见「{template.style}」")
+        if color_scores.get(template.color, 0) > 0:
+            reasons.append(f"配色偏好接近「{template.color}」")
+        if not reasons:
+            reasons.append(f"作为「{template.style}」方向的通用备选")
+        template.reason = "；".join(reasons[:2]) + "。"
     source = "history" if records or favorites else "default"
     summary = (
         f"已根据 {len(records)} 条历史记录和 {len(favorites)} 个收藏方案推荐模板。"
@@ -419,7 +431,13 @@ def _rank_style_templates(
 
 def _default_style_templates_response(summary: str | None = None) -> StyleTemplateResponse:
     return StyleTemplateResponse(
-        templates=[StyleTemplate(**item) for item in STYLE_TEMPLATE_BANK[:4]],
+        templates=[
+            StyleTemplate(
+                **item,
+                reason=f"该模板适合作为「{item['style']}」方向的初始参考。",
+            )
+            for item in STYLE_TEMPLATE_BANK[:4]
+        ],
         summary=summary or "请上传底稿或参考图后点击智能推荐，由大模型生成图片相关模板。",
         source="default",
     )
@@ -620,7 +638,10 @@ def _coerce_vision_templates(data: dict[str, object], seed: int) -> list[StyleTe
             "material": str(item.get("material") or fallback["material"])[:30],
             "prompt": str(item.get("prompt") or fallback["prompt"])[:140],
             "desc": str(item.get("desc") or fallback["desc"])[:24],
+            "reason": str(item.get("reason") or fallback.get("reason") or "")[:80],
         }
+        if not payload["reason"]:
+            payload["reason"] = f"识别到图片中的空间与材质特征，因此推荐「{payload['style']}」方向。"
         try:
             templates.append(StyleTemplate(**payload))
         except ValueError:
@@ -669,7 +690,7 @@ async def _vision_style_templates(req: StyleTemplateRequest) -> StyleTemplateRes
     )
     user_text = (
         "只返回JSON对象，第一字符必须是{，最后一个字符必须是}。格式为："
-        '{"templates":[{"name":"","room":"","style":"","color":"","material":"","prompt":"","desc":""}],'
+        '{"templates":[{"name":"","room":"","style":"","color":"","material":"","prompt":"","desc":"","reason":""}],'
         '"summary":""}。templates必须正好4个。'
         "字段要求：name为6到10个汉字；room必须是客厅、卧室、厨房、餐厅、书房、儿童房、玄关、卫生间之一；"
         "style必须是现代简约、新中式、北欧、中古风、奶油风、侘寂风、工业风、轻奢之一；"
@@ -679,6 +700,8 @@ async def _vision_style_templates(req: StyleTemplateRequest) -> StyleTemplateRes
         "用户当前选择的材质最多只能出现在1个template里，不能四个都使用同一材质；"
         "每个template都应该从图片中提取不同的可改造重点，例如采光、背景墙、沙发、收纳、灯光、餐厨或软装；"
         "desc为3个短标签，用顿号分隔，总长度不超过16个汉字，例如：柔和、明亮、适合年轻家庭；"
+        "reason为推荐解释，必须说明从图片中识别到的1到2个依据以及为什么推荐该风格，控制在28到50个中文字符；"
+        "reason示例：识别到大面积落地窗和浅色地面，因此推荐现代简约和北欧方向；"
         "prompt必须符合既有模板语气，并且每个prompt都要包含至少1个从图片中识别到的具体元素；"
         "prompt必须强调保留门窗位置、主要空间边界和合理家具比例。"
         f"{template_style}"
@@ -1050,6 +1073,18 @@ async def list_design_records(
 @app.get("/api/v1/design/records/{task_id}", response_model=DesignRecord)
 async def get_design_record(task_id: str, user: UserProfile = Depends(current_user)) -> DesignRecord:
     rec = store.get_design_record(task_id, user_id=user.id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="design record not found")
+    return rec
+
+
+@app.post("/api/v1/design/records/{task_id}/feedback", response_model=DesignRecord)
+async def save_design_feedback(
+    task_id: str,
+    feedback: DesignFeedbackRequest,
+    user: UserProfile = Depends(current_user),
+) -> DesignRecord:
+    rec = store.update_design_feedback(task_id, feedback, user_id=user.id)
     if not rec:
         raise HTTPException(status_code=404, detail="design record not found")
     return rec

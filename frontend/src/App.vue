@@ -53,16 +53,19 @@
           :selected-history-task-id="selectedHistoryTaskId"
           :presets="presets"
           :record-style-filter="recordStyleFilter"
+          :feedback-submitting="feedbackSubmitting"
           :short-task-id="shortTaskId"
           :can-compare-record="canCompareRecord"
           @save-current-scheme="saveCurrentScheme"
           @download-result-image="downloadResultImage"
+          @save-pdf-report="savePdfReport"
           @compare-record-images="compareRecordImages"
           @delete-current-record="deleteCurrentRecord"
           @preview-image="previewImage"
           @load-favorites="loadFavorites"
           @select-saved-scheme="selectSavedScheme"
           @remove-favorite="removeFavorite"
+          @save-feedback="saveDesignFeedback"
           @update:record-style-filter="recordStyleFilter = $event"
           @load-design-records="loadDesignRecords"
           @open-history="openHistory"
@@ -215,6 +218,7 @@ export default {
       adminLoading: false,
       adminDashboard: {},
       promptOptimizing: false,
+      feedbackSubmitting: false,
       recommendationLoading: false,
       recommendationHint: "上传底稿后，可由大模型识别图片并生成4个提示词模板",
       recommendationActive: false,
@@ -947,6 +951,85 @@ export default {
       }
     },
 
+    savePdfReport() {
+      const record = this.selectedRecord;
+      if (!record) {
+        ElMessage.warning("请先选择一个已生成的方案");
+        return;
+      }
+      const escapeHtml = (value) =>
+        String(value ?? "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      const time = record.created_at
+        ? new Date(this.toTimestampMs(record.created_at)).toLocaleString()
+        : "-";
+      const score = (value) => (value ? `${value} / 5` : "-");
+      const imageHtml = (title, url) =>
+        url
+          ? `<section><h2>${title}</h2><img src="${escapeHtml(url)}" alt="${title}" /></section>`
+          : `<section><h2>${title}</h2><p>未提供</p></section>`;
+
+      const html = `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>家装智能设计方案报告</title>
+  <style>
+    body { font-family: "Microsoft YaHei", Arial, sans-serif; margin: 32px; color: #172126; }
+    h1 { margin: 0 0 8px; font-size: 26px; }
+    h2 { margin: 24px 0 10px; font-size: 18px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    td { border: 1px solid #d8e0e3; padding: 8px 10px; vertical-align: top; }
+    td:first-child { width: 140px; color: #66777f; background: #f6f8f9; }
+    img { max-width: 100%; max-height: 520px; display: block; margin-top: 8px; border: 1px solid #d8e0e3; }
+    p { line-height: 1.7; white-space: pre-wrap; }
+    .save-action { margin-bottom: 20px; padding: 8px 18px; border: 1px solid #1b8f7b; color: #0f6f60; background: #fff; border-radius: 4px; cursor: pointer; }
+    .hint { color: #66777f; font-size: 13px; }
+    @media print { body { margin: 18mm; } button { display: none; } }
+  </style>
+</head>
+<body>
+  <button class="save-action" onclick="window.print()">保存为 PDF</button>
+  <p class="hint">在弹出的系统窗口中选择“另存为 PDF”即可保存到本地。</p>
+  <h1>家装智能设计方案报告</h1>
+  <p>任务编号：${escapeHtml(record.task_id)}</p>
+  <p>生成时间：${escapeHtml(time)}</p>
+  <h2>方案信息</h2>
+  <table>
+    <tr><td>空间</td><td>${escapeHtml(record.room_type || "-")}</td></tr>
+    <tr><td>风格</td><td>${escapeHtml(record.design_style || "-")}</td></tr>
+    <tr><td>色彩</td><td>${escapeHtml(record.color_preference || "-")}</td></tr>
+    <tr><td>材质</td><td>${escapeHtml(record.material_preference || "-")}</td></tr>
+    <tr><td>保持原有结构</td><td>${record.keep_structure ? "是" : "否"}</td></tr>
+  </table>
+  <h2>设计需求与提示词</h2>
+  <p>${escapeHtml(record.prompt || "-")}</p>
+  ${record.negative_prompt ? `<p>排除项：${escapeHtml(record.negative_prompt)}</p>` : ""}
+  ${imageHtml("设计底稿", record.draft_image_url)}
+  ${imageHtml("生成结果", record.result_image_url)}
+  <h2>方案评分与反馈</h2>
+  <table>
+    <tr><td>采光</td><td>${score(record.lighting_score)}</td></tr>
+    <tr><td>风格匹配</td><td>${score(record.style_match_score)}</td></tr>
+    <tr><td>空间利用</td><td>${score(record.space_utilization_score)}</td></tr>
+    <tr><td>满意度</td><td>${score(record.satisfaction_score)}</td></tr>
+    <tr><td>文字反馈</td><td>${escapeHtml(record.feedback_text || "-")}</td></tr>
+  </table>
+</body>
+</html>`;
+      const reportWindow = window.open("", "_blank");
+      if (!reportWindow) {
+        ElMessage.warning("浏览器阻止了弹窗，请允许弹窗后重试");
+        return;
+      }
+      reportWindow.document.open();
+      reportWindow.document.write(html);
+      reportWindow.document.close();
+    },
+
     async saveCurrentScheme() {
       const imageUrl = this.displayResultImage;
       if (!imageUrl) {
@@ -976,10 +1059,7 @@ export default {
         });
         const normalized = this.favoriteToScheme(saved);
         this.savedSchemes = [normalized, ...this.savedSchemes.filter((item) => item.id !== normalized.id)].slice(0, 20);
-        this.selectedSavedSchemeId = normalized.id;
-        this.currentTaskId = "";
-        this.selectedRecord = null;
-        this.selectedHistoryTaskId = "";
+        await this.selectSavedScheme(normalized);
         this.project.stage = "方案比对";
         ElMessage.success("已收藏当前方案");
       } catch (err) {
@@ -987,14 +1067,25 @@ export default {
       }
     },
 
-    selectSavedScheme(scheme) {
+    async selectSavedScheme(scheme) {
       this.selectedSavedSchemeId = scheme.id;
-      this.currentTaskId = "";
+      this.currentTaskId = scheme.taskId || "";
       this.selectedRecord = null;
       this.selectedHistoryTaskId = "";
       this.compareMode = "result-saved";
       this.activeTab = "compare";
       this.resultImage = scheme.image;
+
+      if (!scheme.taskId) return;
+
+      this.selectedHistoryTaskId = scheme.taskId;
+      const cached = this.recordCache[scheme.taskId];
+      if (cached) {
+        this.selectedRecord = cached;
+        this.applyRecordAssets(cached);
+        this.resultImage = cached.result_image_url || scheme.image;
+      }
+      await this.loadDesignRecord(scheme.taskId, false);
     },
 
     favoriteToScheme(favorite) {
@@ -1029,6 +1120,38 @@ export default {
         ElMessage.success("已取消收藏");
       } catch (err) {
         ElMessage.error(err.message);
+      }
+    },
+
+    async saveDesignFeedback(payload) {
+      const taskId = payload?.taskId || this.selectedHistoryTaskId || this.currentTaskId;
+      if (!taskId) {
+        ElMessage.warning("请先选择一个生成方案");
+        return;
+      }
+      this.feedbackSubmitting = true;
+      try {
+        const record = await this.request(`/api/v1/design/records/${encodeURIComponent(taskId)}/feedback`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            lighting_score: payload.lighting_score || null,
+            style_match_score: payload.style_match_score || null,
+            space_utilization_score: payload.space_utilization_score || null,
+            satisfaction_score: payload.satisfaction_score || null,
+            feedback_text: payload.feedback_text || null,
+          }),
+        });
+        this.cacheRecord(record);
+        if (taskId === this.selectedHistoryTaskId || taskId === this.currentTaskId) {
+          this.selectedRecord = record;
+        }
+        await this.loadDesignRecords(false);
+        ElMessage.success("评分反馈已保存");
+      } catch (err) {
+        ElMessage.error(err.message);
+      } finally {
+        this.feedbackSubmitting = false;
       }
     },
 

@@ -60,6 +60,7 @@
       >
         <strong>{{ preset.name }}</strong>
         <span>{{ preset.desc }}</span>
+        <small v-if="preset.reason">{{ preset.reason }}</small>
       </button>
     </div>
 

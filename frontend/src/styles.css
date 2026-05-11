@@ -370,7 +370,7 @@ body {
 }
 
 .preset-chip {
-  min-height: 84px;
+  min-height: 116px;
   padding: 12px;
 }
 
@@ -407,8 +407,19 @@ body {
 }
 
 .preset-chip span {
+  display: block;
   color: var(--muted);
   font-size: 12px;
+  line-height: 1.45;
+}
+
+.preset-chip small {
+  display: block;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(127, 146, 153, 0.2);
+  color: #5d6f76;
+  font-size: 11px;
   line-height: 1.45;
 }
 
@@ -634,6 +645,39 @@ body {
 
 .generating-inline-alert {
   margin-top: 10px;
+}
+
+.feedback-card {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 18px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.feedback-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+}
+
+.feedback-grid label {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.feedback-grid label > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.feedback-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .preview-card {

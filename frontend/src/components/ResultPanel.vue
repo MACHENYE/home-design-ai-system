@@ -33,8 +33,53 @@
               收藏当前方案
             </el-button>
             <el-button plain :disabled="!displayResultImage" @click="$emit('download-result-image')">下载图片</el-button>
+            <el-button plain :disabled="!selectedRecord" @click="$emit('save-pdf-report')">保存PDF</el-button>
           </div>
           <el-tag effect="plain">{{ currentTaskId ? shortTaskId(currentTaskId) : "未开始" }}</el-tag>
+        </div>
+
+        <div class="feedback-card">
+          <div class="small-title">
+            <strong>方案评分与反馈</strong>
+          </div>
+          <div class="feedback-grid">
+            <label>
+              <span>采光</span>
+              <el-rate v-model="feedbackForm.lighting_score" :max="5" />
+            </label>
+            <label>
+              <span>风格匹配</span>
+              <el-rate v-model="feedbackForm.style_match_score" :max="5" />
+            </label>
+            <label>
+              <span>空间利用</span>
+              <el-rate v-model="feedbackForm.space_utilization_score" :max="5" />
+            </label>
+            <label>
+              <span>满意度</span>
+              <el-rate v-model="feedbackForm.satisfaction_score" :max="5" />
+            </label>
+          </div>
+          <el-input
+            v-model="feedbackForm.feedback_text"
+            type="textarea"
+            :rows="2"
+            maxlength="500"
+            show-word-limit
+            placeholder="可补充说明喜欢或不满意的地方"
+          ></el-input>
+          <div class="feedback-actions">
+            <el-button
+              size="small"
+              type="primary"
+              plain
+              :disabled="!feedbackTaskId || !displayResultImage"
+              :loading="feedbackSubmitting"
+              @click="submitFeedback"
+            >
+              保存评分
+            </el-button>
+          </div>
         </div>
 
         <div class="preview-grid">
@@ -54,7 +99,7 @@
       <div class="result-detail-column">
         <div class="record-detail compact-record-detail">
           <div class="small-title">
-            <strong>历史方案详情</strong>
+            <strong>方案详情</strong>
             <div class="inline-actions">
               <el-button size="small" plain :disabled="!canCompareRecord()" @click="$emit('compare-record-images')">对比查看</el-button>
               <el-button size="small" type="danger" plain :disabled="!selectedRecord" @click="$emit('delete-current-record')">
@@ -108,7 +153,7 @@
               </div>
             </div>
           </div>
-          <el-empty v-else description="点击最近任务查看完整记录" :image-size="64"></el-empty>
+          <el-empty v-else description="点击收藏方案或最近任务查看完整记录" :image-size="64"></el-empty>
         </div>
       </div>
     </div>
@@ -235,6 +280,10 @@ export default {
       type: String,
       default: "",
     },
+    feedbackSubmitting: {
+      type: Boolean,
+      default: false,
+    },
     shortTaskId: {
       type: Function,
       required: true,
@@ -247,15 +296,57 @@ export default {
   emits: [
     "save-current-scheme",
     "download-result-image",
+    "save-pdf-report",
     "compare-record-images",
     "delete-current-record",
     "preview-image",
     "load-favorites",
     "select-saved-scheme",
     "remove-favorite",
+    "save-feedback",
     "update:recordStyleFilter",
     "load-design-records",
     "open-history",
   ],
+  data() {
+    return {
+      feedbackForm: this.feedbackFromRecord(this.selectedRecord),
+    };
+  },
+  computed: {
+    feedbackTaskId() {
+      return this.selectedRecord?.task_id || this.currentTaskId || "";
+    },
+  },
+  watch: {
+    selectedRecord: {
+      handler(record) {
+        this.feedbackForm = this.feedbackFromRecord(record);
+      },
+      immediate: true,
+    },
+    currentTaskId() {
+      if (!this.selectedRecord) {
+        this.feedbackForm = this.feedbackFromRecord(null);
+      }
+    },
+  },
+  methods: {
+    feedbackFromRecord(record) {
+      return {
+        lighting_score: record?.lighting_score || 0,
+        style_match_score: record?.style_match_score || 0,
+        space_utilization_score: record?.space_utilization_score || 0,
+        satisfaction_score: record?.satisfaction_score || 0,
+        feedback_text: record?.feedback_text || "",
+      };
+    },
+    submitFeedback() {
+      this.$emit("save-feedback", {
+        taskId: this.feedbackTaskId,
+        ...this.feedbackForm,
+      });
+    },
+  },
 };
 </script>

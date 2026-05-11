@@ -6,7 +6,16 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .models import FavoriteScheme, FavoriteSchemeCreate, UserProfile, DesignRecord, GenerateRequest, NanoBananaTaskStatus, TaskRecord
+from .models import (
+    DesignFeedbackRequest,
+    DesignRecord,
+    FavoriteScheme,
+    FavoriteSchemeCreate,
+    GenerateRequest,
+    NanoBananaTaskStatus,
+    TaskRecord,
+    UserProfile,
+)
 
 
 class TasksStore:
@@ -56,6 +65,12 @@ class TasksStore:
                   mask_url TEXT NULL,
                   result_image_url TEXT NULL,
                   error_message TEXT NULL,
+                  lighting_score INTEGER NULL,
+                  style_match_score INTEGER NULL,
+                  space_utilization_score INTEGER NULL,
+                  satisfaction_score INTEGER NULL,
+                  feedback_text TEXT NULL,
+                  feedback_updated_at INTEGER NULL,
                   created_at INTEGER NOT NULL,
                   updated_at INTEGER NOT NULL
                 )
@@ -99,6 +114,12 @@ class TasksStore:
             )
             self._ensure_column(conn, "tasks", "user_id", "INTEGER NULL")
             self._ensure_column(conn, "design_records", "user_id", "INTEGER NULL")
+            self._ensure_column(conn, "design_records", "lighting_score", "INTEGER NULL")
+            self._ensure_column(conn, "design_records", "style_match_score", "INTEGER NULL")
+            self._ensure_column(conn, "design_records", "space_utilization_score", "INTEGER NULL")
+            self._ensure_column(conn, "design_records", "satisfaction_score", "INTEGER NULL")
+            self._ensure_column(conn, "design_records", "feedback_text", "TEXT NULL")
+            self._ensure_column(conn, "design_records", "feedback_updated_at", "INTEGER NULL")
             conn.commit()
         self._backfill_design_records()
 
@@ -359,6 +380,74 @@ class TasksStore:
             rows = conn.execute(sql, params).fetchall()
         return [self._row_to_design_record(row) for row in rows]
 
+    def update_design_feedback(
+        self,
+        task_id: str,
+        feedback: DesignFeedbackRequest,
+        *,
+        user_id: int | None = None,
+    ) -> DesignRecord | None:
+        now = int(time.time())
+        with self._connect() as conn:
+            if user_id is None:
+                cur = conn.execute(
+                    """
+                    UPDATE design_records
+                    SET lighting_score=?,
+                        style_match_score=?,
+                        space_utilization_score=?,
+                        satisfaction_score=?,
+                        feedback_text=?,
+                        feedback_updated_at=?,
+                        updated_at=?
+                    WHERE task_id=?
+                    """,
+                    (
+                        feedback.lighting_score,
+                        feedback.style_match_score,
+                        feedback.space_utilization_score,
+                        feedback.satisfaction_score,
+                        feedback.feedback_text,
+                        now,
+                        now,
+                        task_id,
+                    ),
+                )
+                row = conn.execute("SELECT * FROM design_records WHERE task_id=?", (task_id,)).fetchone()
+            else:
+                cur = conn.execute(
+                    """
+                    UPDATE design_records
+                    SET lighting_score=?,
+                        style_match_score=?,
+                        space_utilization_score=?,
+                        satisfaction_score=?,
+                        feedback_text=?,
+                        feedback_updated_at=?,
+                        updated_at=?
+                    WHERE task_id=? AND user_id=?
+                    """,
+                    (
+                        feedback.lighting_score,
+                        feedback.style_match_score,
+                        feedback.space_utilization_score,
+                        feedback.satisfaction_score,
+                        feedback.feedback_text,
+                        now,
+                        now,
+                        task_id,
+                        user_id,
+                    ),
+                )
+                row = conn.execute(
+                    "SELECT * FROM design_records WHERE task_id=? AND user_id=?",
+                    (task_id, user_id),
+                ).fetchone()
+            conn.commit()
+        if cur.rowcount <= 0 or not row:
+            return None
+        return self._row_to_design_record(row)
+
     def delete_design_record(self, task_id: str, user_id: int | None = None) -> bool:
         with self._connect() as conn:
             if user_id is None:
@@ -466,7 +555,9 @@ class TasksStore:
                   (SELECT COUNT(*) FROM design_records) AS records,
                   (SELECT COUNT(*) FROM favorite_schemes) AS favorites,
                   (SELECT COUNT(*) FROM design_records WHERE status=3) AS successes,
-                  (SELECT COUNT(*) FROM design_records WHERE status=4) AS failures
+                  (SELECT COUNT(*) FROM design_records WHERE status=4) AS failures,
+                  (SELECT COUNT(*) FROM design_records WHERE satisfaction_score IS NOT NULL) AS feedbacks,
+                  (SELECT ROUND(AVG(satisfaction_score), 2) FROM design_records WHERE satisfaction_score IS NOT NULL) AS avg_satisfaction
                 """
             ).fetchone()
             users = conn.execute(
@@ -478,6 +569,7 @@ class TasksStore:
                   COUNT(design_records.task_id) AS total_records,
                   SUM(CASE WHEN design_records.status=3 THEN 1 ELSE 0 END) AS success_records,
                   SUM(CASE WHEN design_records.status=4 THEN 1 ELSE 0 END) AS failed_records,
+                  ROUND(AVG(design_records.satisfaction_score), 2) AS avg_satisfaction,
                   MAX(design_records.updated_at) AS last_used_at
                 FROM users
                 LEFT JOIN design_records ON design_records.user_id=users.id
@@ -551,6 +643,12 @@ class TasksStore:
             mask_url=row["mask_url"],
             result_image_url=row["result_image_url"],
             error_message=row["error_message"],
+            lighting_score=row["lighting_score"],
+            style_match_score=row["style_match_score"],
+            space_utilization_score=row["space_utilization_score"],
+            satisfaction_score=row["satisfaction_score"],
+            feedback_text=row["feedback_text"],
+            feedback_updated_at=row["feedback_updated_at"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

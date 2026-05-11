@@ -110,8 +110,22 @@ class DesignRecord(BaseModel):
     mask_url: str | None = None
     result_image_url: str | None = None
     error_message: str | None = None
+    lighting_score: int | None = None
+    style_match_score: int | None = None
+    space_utilization_score: int | None = None
+    satisfaction_score: int | None = None
+    feedback_text: str | None = None
+    feedback_updated_at: int | None = None
     created_at: int | None = None
     updated_at: int | None = None
+
+
+class DesignFeedbackRequest(BaseModel):
+    lighting_score: int | None = Field(default=None, ge=1, le=5)
+    style_match_score: int | None = Field(default=None, ge=1, le=5)
+    space_utilization_score: int | None = Field(default=None, ge=1, le=5)
+    satisfaction_score: int | None = Field(default=None, ge=1, le=5)
+    feedback_text: str | None = Field(default=None, max_length=500)
 
 
 class FavoriteSchemeCreate(BaseModel):
@@ -146,6 +160,7 @@ class StyleTemplate(BaseModel):
     material: str
     prompt: str
     desc: str
+    reason: str | None = None
 
 
 class StyleTemplateRequest(BaseModel):
