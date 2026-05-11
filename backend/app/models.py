@@ -138,6 +138,32 @@ class AssetUploadResponse(BaseModel):
     warning: str | None = None
 
 
+class StyleTemplate(BaseModel):
+    name: str
+    room: str
+    style: str
+    color: str
+    material: str
+    prompt: str
+    desc: str
+
+
+class StyleTemplateRequest(BaseModel):
+    room_type: str | None = None
+    design_style: str | None = None
+    color_preference: str | None = None
+    material_preference: str | None = None
+    prompt: str | None = None
+    image_urls: list[str] = Field(default_factory=list)
+    refresh_seed: int = 0
+
+
+class StyleTemplateResponse(BaseModel):
+    templates: list[StyleTemplate] = Field(default_factory=list)
+    summary: str | None = None
+    source: str = "history"
+
+
 class NanoBananaCallback(BaseModel):
     taskId: str
     status: int

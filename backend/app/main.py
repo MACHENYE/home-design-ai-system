@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import json
+import mimetypes
 import re
 import hashlib
 import hmac
@@ -7,6 +10,7 @@ import secrets
 import sqlite3
 import uuid
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
@@ -25,6 +29,9 @@ from .models import (
     GenerateRequest,
     GenerateType,
     NanoBananaTaskStatus,
+    StyleTemplate,
+    StyleTemplateRequest,
+    StyleTemplateResponse,
     SubmitResponse,
     TaskRecord,
     UserLoginRequest,
@@ -198,6 +205,488 @@ def _parse_record_info(data: dict[str, object], rec: TaskRecord) -> tuple[NanoBa
     )
 
     return status, str(result_url) if result_url else None, str(error_msg) if error_msg else None
+
+
+STYLE_TEMPLATE_BANK = [
+    {
+        "name": "现代奶油客厅",
+        "room": "客厅",
+        "style": "奶油风",
+        "color": "奶油色+浅咖",
+        "material": "布艺",
+        "prompt": "保留客厅结构，提升空间通透感，加入柔和奶油色墙面、圆角家具和温暖灯带，整体干净舒适。",
+        "desc": "柔和、明亮、适合年轻家庭",
+    },
+    {
+        "name": "新中式会客区",
+        "room": "客厅",
+        "style": "新中式",
+        "color": "米色+胡桃木",
+        "material": "原木",
+        "prompt": "保留空间边界，生成克制雅致的新中式会客区，强调木质格栅、留白与东方秩序感。",
+        "desc": "稳重、雅致、结构清晰",
+    },
+    {
+        "name": "北欧卧室",
+        "room": "卧室",
+        "style": "北欧",
+        "color": "暖白+原木",
+        "material": "原木",
+        "prompt": "保留卧室结构，呈现自然松弛的北欧卧室，光线柔和，床品简洁，适度加入收纳。",
+        "desc": "轻盈、自然、居住感强",
+    },
+    {
+        "name": "侘寂书房",
+        "room": "书房",
+        "style": "侘寂风",
+        "color": "深色沉稳",
+        "material": "微水泥",
+        "prompt": "保留书房结构，生成克制安静的侘寂空间，突出材质肌理、灰调光影和低干扰工作氛围。",
+        "desc": "安静、克制、材质感强",
+    },
+    {
+        "name": "中古风客厅",
+        "room": "客厅",
+        "style": "中古风",
+        "color": "米色+胡桃木",
+        "material": "皮革",
+        "prompt": "保持原有采光和主要家具尺度，加入胡桃木、皮革单椅和复古灯具，营造温润中古氛围。",
+        "desc": "复古、温润、层次丰富",
+    },
+    {
+        "name": "原木餐厨区",
+        "room": "餐厅",
+        "style": "现代简约",
+        "color": "暖白+原木",
+        "material": "原木",
+        "prompt": "保留餐厨动线，增加原木餐桌、简洁收纳柜和柔和吊灯，让空间更通透自然。",
+        "desc": "温暖、实用、餐厨一体",
+    },
+    {
+        "name": "轻奢主卧",
+        "room": "卧室",
+        "style": "轻奢",
+        "color": "黑白灰",
+        "material": "金属线条",
+        "prompt": "保留门窗位置，使用低饱和灰调、金属细节和简洁床头背景，形成克制高级的主卧氛围。",
+        "desc": "精致、克制、质感突出",
+    },
+    {
+        "name": "清爽儿童房",
+        "room": "儿童房",
+        "style": "现代简约",
+        "color": "低饱和莫兰迪",
+        "material": "布艺",
+        "prompt": "保留房间结构，增加安全圆角家具、低饱和配色和充足收纳，形成明亮柔和的儿童房。",
+        "desc": "安全、清爽、收纳友好",
+    },
+    {
+        "name": "工业风书房",
+        "room": "书房",
+        "style": "工业风",
+        "color": "黑白灰",
+        "material": "金属线条",
+        "prompt": "保留书房结构，使用深灰墙面、金属书架和线性灯光，营造克制高效的工作空间。",
+        "desc": "利落、硬朗、适合工作",
+    },
+    {
+        "name": "奶油风卧室",
+        "room": "卧室",
+        "style": "奶油风",
+        "color": "奶油色+浅咖",
+        "material": "布艺",
+        "prompt": "保留卧室门窗与床位关系，加入奶油色墙面、柔软布艺床品和暖光灯，营造放松睡眠氛围。",
+        "desc": "柔软、温暖、睡眠友好",
+    },
+    {
+        "name": "北欧玄关",
+        "room": "玄关",
+        "style": "北欧",
+        "color": "暖白+原木",
+        "material": "藤编",
+        "prompt": "保留玄关通行动线，加入原木鞋柜、藤编细节和柔和灯光，提升入户收纳与清爽感。",
+        "desc": "清爽、自然、收纳明确",
+    },
+    {
+        "name": "微水泥厨房",
+        "room": "厨房",
+        "style": "现代简约",
+        "color": "低饱和莫兰迪",
+        "material": "微水泥",
+        "prompt": "保留厨房操作动线，使用微水泥质感、无把手柜门和柔和灰调，让厨房整洁高级。",
+        "desc": "整洁、耐看、材质统一",
+    },
+]
+
+
+def _add_recommendation_score(scores: dict[str, float], label: str | None, score: float) -> None:
+    if not label:
+        return
+    key = str(label).strip()
+    if key:
+        scores[key] = scores.get(key, 0.0) + score
+
+
+def _favorite_parts(favorite: FavoriteScheme) -> tuple[str | None, str | None, str | None, str | None]:
+    room = style = color = material = None
+    if favorite.title and "·" in favorite.title:
+        room_part, style_part = favorite.title.split("·", 1)
+        room = room_part.strip() or None
+        style = style_part.strip() or None
+    if favorite.style and "/" in favorite.style:
+        color_part, material_part = favorite.style.split("/", 1)
+        color = color_part.strip() or None
+        material = material_part.strip() or None
+    return room, style, color, material
+
+
+def _rank_style_templates(
+    req: StyleTemplateRequest,
+    records: list[DesignRecord],
+    favorites: list[FavoriteScheme],
+) -> StyleTemplateResponse:
+    room_scores: dict[str, float] = {}
+    style_scores: dict[str, float] = {}
+    color_scores: dict[str, float] = {}
+    material_scores: dict[str, float] = {}
+    favorite_task_ids = {item.task_id for item in favorites if item.task_id}
+
+    for record in records:
+        weight = 1.0
+        if record.task_id in favorite_task_ids:
+            weight += 1.4
+        if record.result_image_url:
+            weight += 0.25
+        _add_recommendation_score(room_scores, record.room_type, weight * 0.32)
+        _add_recommendation_score(style_scores, record.design_style, weight * 0.42)
+        _add_recommendation_score(color_scores, record.color_preference, weight * 0.28)
+        _add_recommendation_score(material_scores, record.material_preference, weight * 0.24)
+
+    for favorite in favorites:
+        room, style, color, material = _favorite_parts(favorite)
+        _add_recommendation_score(room_scores, room, 0.9)
+        _add_recommendation_score(style_scores, style, 1.2)
+        _add_recommendation_score(color_scores, color, 0.8)
+        _add_recommendation_score(material_scores, material, 0.7)
+
+    _add_recommendation_score(room_scores, req.room_type, 0.65)
+    _add_recommendation_score(style_scores, req.design_style, 0.35)
+    _add_recommendation_score(color_scores, req.color_preference, 0.25)
+    _add_recommendation_score(material_scores, req.material_preference, 0.25)
+
+    seed = abs(int(req.refresh_seed or 0))
+    rotated = STYLE_TEMPLATE_BANK[seed % len(STYLE_TEMPLATE_BANK) :] + STYLE_TEMPLATE_BANK[: seed % len(STYLE_TEMPLATE_BANK)]
+    ranked: list[tuple[float, dict[str, str]]] = []
+    for index, template in enumerate(rotated):
+        score = 0.0
+        score += room_scores.get(template["room"], 0.0) * 1.05
+        score += style_scores.get(template["style"], 0.0) * 1.25
+        score += color_scores.get(template["color"], 0.0) * 0.85
+        score += material_scores.get(template["material"], 0.0) * 0.75
+        score += max(0, 0.16 - index * 0.01)
+        ranked.append((score, template))
+
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    selected: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for _, template in ranked:
+        if template["name"] in seen:
+            continue
+        selected.append(template)
+        seen.add(template["name"])
+        if len(selected) == 4:
+            break
+
+    if len(selected) < 4:
+        for template in rotated:
+            if template["name"] not in seen:
+                selected.append(template)
+                seen.add(template["name"])
+            if len(selected) == 4:
+                break
+
+    templates = [StyleTemplate(**item) for item in selected]
+    source = "history" if records or favorites else "default"
+    summary = (
+        f"已根据 {len(records)} 条历史记录和 {len(favorites)} 个收藏方案推荐模板。"
+        if source == "history"
+        else "暂无历史偏好，已提供通用风格模板。"
+    )
+    return StyleTemplateResponse(templates=templates, summary=summary, source=source)
+
+
+def _default_style_templates_response(summary: str | None = None) -> StyleTemplateResponse:
+    return StyleTemplateResponse(
+        templates=[StyleTemplate(**item) for item in STYLE_TEMPLATE_BANK[:4]],
+        summary=summary or "请上传底稿或参考图后点击智能推荐，由大模型生成图片相关模板。",
+        source="default",
+    )
+
+
+def _bailian_api_key() -> str:
+    return settings.bailian_api_key.strip() or settings.dashscope_api_key.strip()
+
+
+def _bailian_error_summary(status_code: int | None = None, body: str | None = None) -> str:
+    message = ""
+    if body:
+        try:
+            data = json.loads(body)
+            error = data.get("error") if isinstance(data, dict) else None
+            if isinstance(error, dict):
+                message = str(error.get("message") or error.get("code") or "")
+        except json.JSONDecodeError:
+            message = body[:160]
+
+    if status_code == 401:
+        return "百炼 API Key 无效或未生效，请检查 backend/.env 后重启后端。"
+    if status_code == 403:
+        return "当前百炼 API Key 没有访问该模型的权限，请检查账号权限或模型配置。"
+    if status_code == 429:
+        return "百炼额度不足或请求过于频繁，智能推荐暂不可用。"
+    if status_code:
+        return f"百炼接口返回 {status_code}，智能推荐暂不可用。{message}".strip()
+    return f"百炼请求失败，智能推荐暂不可用。{message}".strip()
+
+
+def _extract_response_text(payload: dict[str, object]) -> str:
+    output_text = payload.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+
+    texts: list[str] = []
+    output = payload.get("output")
+    if isinstance(output, list):
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            if not isinstance(content, list):
+                continue
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                text = part.get("text")
+                if isinstance(text, str):
+                    texts.append(text)
+    return "\n".join(texts).strip()
+
+
+def _extract_chat_completion_text(payload: dict[str, object]) -> str:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    first = choices[0]
+    if not isinstance(first, dict):
+        return ""
+    message = first.get("message")
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    return content.strip() if isinstance(content, str) else ""
+
+
+def _json_object_from_text(text: str) -> dict[str, object] | None:
+    if not text:
+        return None
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+
+    candidates = [cleaned]
+    candidates.extend(re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, flags=re.IGNORECASE | re.DOTALL))
+    first_brace = cleaned.find("{")
+    last_brace = cleaned.rfind("}")
+    if first_brace >= 0 and last_brace > first_brace:
+        candidates.append(cleaned[first_brace : last_brace + 1])
+
+    decoder = json.JSONDecoder()
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            try:
+                start = candidate.find("{")
+                if start < 0:
+                    continue
+                data, _ = decoder.raw_decode(candidate[start:])
+            except json.JSONDecodeError:
+                continue
+        if isinstance(data, str):
+            nested = _json_object_from_text(data)
+            if nested:
+                return nested
+        if isinstance(data, dict):
+            return data
+    return None
+
+
+def _image_url_to_local_path(image_url: str) -> Path | None:
+    parsed = urlparse(image_url)
+    path = parsed.path or image_url
+    if "/uploads/" not in path:
+        return None
+    filename = PurePosixPath(path).name
+    if not filename:
+        return None
+    candidate = uploads_path / filename
+    try:
+        candidate.resolve().relative_to(uploads_path.resolve())
+    except ValueError:
+        return None
+    return candidate if candidate.exists() else None
+
+
+async def _image_url_as_model_input(image_url: str) -> str:
+    image_url = image_url.strip()
+    if not image_url:
+        raise ValueError("empty image url")
+    if image_url.startswith("data:image/"):
+        return image_url
+
+    local_path = _image_url_to_local_path(image_url)
+    if local_path:
+        data = await run_in_threadpool(local_path.read_bytes)
+        mime_type = mimetypes.guess_type(local_path.name)[0] or "image/png"
+        encoded = base64.b64encode(data).decode("ascii")
+        return f"data:{mime_type};base64,{encoded}"
+
+    if image_url.startswith(("http://", "https://")):
+        return image_url
+    if image_url.startswith("/uploads/"):
+        raise ValueError("local upload is not publicly reachable")
+    raise ValueError("unsupported image url")
+
+
+def _coerce_vision_templates(data: dict[str, object], seed: int) -> list[StyleTemplate]:
+    raw_templates = data.get("templates")
+    if not isinstance(raw_templates, list):
+        return []
+
+    templates: list[StyleTemplate] = []
+    for index, item in enumerate(raw_templates):
+        if not isinstance(item, dict):
+            continue
+        fallback = STYLE_TEMPLATE_BANK[(seed + index) % len(STYLE_TEMPLATE_BANK)]
+        payload = {
+            "name": str(item.get("name") or fallback["name"])[:40],
+            "room": str(item.get("room") or fallback["room"])[:20],
+            "style": str(item.get("style") or fallback["style"])[:30],
+            "color": str(item.get("color") or fallback["color"])[:40],
+            "material": str(item.get("material") or fallback["material"])[:30],
+            "prompt": str(item.get("prompt") or fallback["prompt"])[:140],
+            "desc": str(item.get("desc") or fallback["desc"])[:24],
+        }
+        try:
+            templates.append(StyleTemplate(**payload))
+        except ValueError:
+            continue
+        if len(templates) == 4:
+            break
+    return templates
+
+
+async def _vision_style_templates(req: StyleTemplateRequest) -> StyleTemplateResponse | None:
+    if not settings.vision_recommendation_enabled:
+        return None
+    api_key = _bailian_api_key()
+    if not api_key:
+        return _default_style_templates_response("请在 backend/.env 中配置 BAILIAN_API_KEY 或 DASHSCOPE_API_KEY。")
+
+    image_urls = [url for url in req.image_urls if isinstance(url, str) and url.strip()]
+    if not image_urls:
+        return None
+
+    content_parts: list[dict[str, object]] = []
+    for index, image_url in enumerate(image_urls[:2]):
+        try:
+            model_image_url = await _image_url_as_model_input(image_url)
+        except (OSError, ValueError):
+            continue
+        label = "设计底稿" if index == 0 else "风格参考图"
+        content_parts.append({"type": "text", "text": f"{label}：请重点识别这张图的空间类型、家具、材质、采光和可保留结构。"})
+        content_parts.append({"type": "image_url", "image_url": {"url": model_image_url}})
+    if not content_parts:
+        return None
+
+    system_text = (
+        "你是家装智能设计系统中的风格推荐算法模块。"
+        "你必须以上传图片的真实内容为第一依据生成4个中文提示词模板。"
+        "如果图片内容和用户下拉选项冲突，以图片内容为准；用户选项只作为轻量参考。"
+        "4个模板必须是互相不同的备选方向，不能只围绕同一种材质或同一种风格变化措辞。"
+        "输出必须是严格JSON对象，不能包含Markdown、解释、前言、后记。"
+    )
+    template_style = (
+        "既有模板风格示例："
+        "name=现代奶油客厅，room=客厅，style=奶油风，color=奶油色+浅咖，material=布艺，"
+        "prompt=保留客厅结构，提升空间通透感，加入柔和奶油色墙面、圆角家具和温暖灯带，整体干净舒适。"
+        "desc=柔和、明亮、适合年轻家庭。"
+        "请模仿这种短句风格：名称简短，描述克制，prompt控制在45到90个中文字符。"
+    )
+    user_text = (
+        "只返回JSON对象，第一字符必须是{，最后一个字符必须是}。格式为："
+        '{"templates":[{"name":"","room":"","style":"","color":"","material":"","prompt":"","desc":""}],'
+        '"summary":""}。templates必须正好4个。'
+        "字段要求：name为6到10个汉字；room必须是客厅、卧室、厨房、餐厅、书房、儿童房、玄关、卫生间之一；"
+        "style必须是现代简约、新中式、北欧、中古风、奶油风、侘寂风、工业风、轻奢之一；"
+        "color必须是暖白+原木、黑白灰、米色+胡桃木、低饱和莫兰迪、奶油色+浅咖、深色沉稳之一；"
+        "material必须是原木、微水泥、大理石、藤编、金属线条、布艺、皮革、玻璃之一；"
+        "多样性要求：4个templates中至少包含3种不同style、3种不同color、3种不同material；"
+        "用户当前选择的材质最多只能出现在1个template里，不能四个都使用同一材质；"
+        "每个template都应该从图片中提取不同的可改造重点，例如采光、背景墙、沙发、收纳、灯光、餐厨或软装；"
+        "desc为3个短标签，用顿号分隔，总长度不超过16个汉字，例如：柔和、明亮、适合年轻家庭；"
+        "prompt必须符合既有模板语气，并且每个prompt都要包含至少1个从图片中识别到的具体元素；"
+        "prompt必须强调保留门窗位置、主要空间边界和合理家具比例。"
+        f"{template_style}"
+        f"当前用户已选条件仅供参考，不是硬性限制：空间={req.room_type or '未指定'}，风格={req.design_style or '未指定'}，"
+        f"配色={req.color_preference or '未指定'}，材质={req.material_preference or '未指定'}，"
+        f"需求={req.prompt or '未填写'}。"
+    )
+    payload = {
+        "model": settings.bailian_vision_model,
+        "messages": [
+            {"role": "system", "content": system_text},
+            {"role": "user", "content": [{"type": "text", "text": user_text}, *content_parts]},
+        ],
+        "temperature": 0.75,
+        "max_tokens": 1600,
+        "response_format": {"type": "json_object"},
+    }
+
+    endpoint = settings.bailian_base_url.rstrip("/") + "/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=settings.bailian_timeout_s) as bailian_client:
+            response = await bailian_client.post(endpoint, headers=headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
+    except httpx.HTTPStatusError as exc:
+        return _default_style_templates_response(
+            _bailian_error_summary(exc.response.status_code, exc.response.text)
+        )
+    except httpx.HTTPError as exc:
+        return _default_style_templates_response(_bailian_error_summary(body=str(exc)))
+    except ValueError:
+        return _default_style_templates_response("百炼返回内容不是有效 JSON，智能推荐暂不可用。")
+
+    parsed = _json_object_from_text(_extract_chat_completion_text(data))
+    if not parsed:
+        return _default_style_templates_response("百炼返回格式无法解析，智能推荐暂不可用。")
+
+    templates = _coerce_vision_templates(parsed, abs(int(req.refresh_seed or 0)))
+    if len(templates) < 4:
+        return _default_style_templates_response("百炼未返回完整4个模板，智能推荐暂不可用。")
+
+    summary = parsed.get("summary")
+    return StyleTemplateResponse(
+        templates=templates,
+        summary=str(summary)[:160] if summary else "已根据上传图片生成4个千问视觉推荐模板。",
+        source="vision",
+    )
 
 
 app = FastAPI(title="Home Design AI Backend", version="0.1.0")
@@ -510,6 +999,17 @@ async def delete_favorite(favorite_id: int, user: UserProfile = Depends(current_
     if not deleted:
         raise HTTPException(status_code=404, detail="favorite not found")
     return {"deleted": True}
+
+
+@app.post("/api/v1/recommendations/style-templates", response_model=StyleTemplateResponse)
+async def recommend_style_templates(
+    req: StyleTemplateRequest,
+    _user: UserProfile = Depends(current_user),
+) -> StyleTemplateResponse:
+    vision_result = await _vision_style_templates(req)
+    if vision_result:
+        return vision_result
+    return _default_style_templates_response("智能推荐暂不可用，已保留初始4个模板。")
 
 
 @app.get("/api/v1/tasks", response_model=list[TaskRecord])

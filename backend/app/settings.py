@@ -1,8 +1,18 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+PROJECT_DIR = BACKEND_DIR.parent
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=(BACKEND_DIR / ".env", PROJECT_DIR / ".env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     ai_provider: str = "auto"
 
@@ -24,6 +34,20 @@ class Settings(BaseSettings):
     remote_upload_dir: str = ""
     remote_public_base_url: str = ""
     remote_upload_timeout_s: float = 20.0
+
+    # Optional visual recommendation through Alibaba Cloud Model Studio (Bailian).
+    vision_recommendation_enabled: bool = False
+    bailian_api_key: str = ""
+    dashscope_api_key: str = ""
+    bailian_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    bailian_vision_model: str = "qwen3-vl-plus"
+    bailian_timeout_s: float = 35.0
+
+    # Legacy OpenAI names are kept so old .env files do not fail to load.
+    openai_api_key: str = ""
+    openai_base_url: str = "https://api.openai.com/v1"
+    vision_recommendation_model: str = "gpt-4.1-mini"
+    vision_recommendation_timeout_s: float = 35.0
 
 
 settings = Settings()

@@ -26,9 +26,13 @@
           :submitting="submitting"
           :task-state-text="taskStateText"
           :is-preset-active="isPresetActive"
+          :recommendation-loading="recommendationLoading"
+          :recommendation-hint="recommendationHint"
+          :recommendation-active="recommendationActive"
           @handle-file="handleFile"
           @apply-quick-preset="applyQuickPreset"
           @append-prompt="appendPrompt"
+          @refresh-style-templates="refreshStyleTemplates"
           @submit-design="submitDesign"
           @update:brush-size="brushSize = $event"
           @update:mask-dirty="maskDirty = $event"
@@ -133,6 +137,8 @@ const quickPresets = [
   },
 ];
 
+const initialQuickPresets = quickPresets.map((item) => ({ ...item }));
+
 const promptChips = [
   "增强自然采光",
   "保留电视墙位置",
@@ -189,6 +195,11 @@ export default {
       pollTimer: null,
       selectedSavedSchemeId: "",
       savedSchemes: [],
+      recommendationLoading: false,
+      recommendationHint: "上传底稿后，可由大模型识别图片并生成4个提示词模板",
+      recommendationActive: false,
+      activePresetName: "",
+      styleTemplateSeed: 0,
       history: JSON.parse(localStorage.getItem("home-design-history") || "[]"),
       recordCache: {},
       selectedRecord: null,
@@ -554,6 +565,10 @@ export default {
 
     setAsset(type, url, previewUrl) {
       const asset = { url, previewUrl };
+      this.quickPresets = initialQuickPresets.map((item) => ({ ...item }));
+      this.recommendationActive = false;
+      this.activePresetName = "";
+      this.recommendationHint = "已更新上传图片，点击智能推荐生成新的提示词模板";
       if (type === "draft") {
         this.draftAsset = asset;
         this.draftPreview = previewUrl;
@@ -601,21 +616,68 @@ export default {
     },
 
     isPresetActive(preset) {
-      return (
-        this.form.room_type === preset.room &&
-        this.form.design_style === preset.style &&
-        this.form.color_preference === preset.color &&
-        this.form.material_preference === preset.material
-      );
+      return Boolean(this.activePresetName && this.activePresetName === preset.name);
     },
 
     applyQuickPreset(preset) {
+      this.activePresetName = preset.name;
+      this.recommendationActive = false;
       this.form.room_type = preset.room;
       this.form.design_style = preset.style;
       this.form.color_preference = preset.color;
       this.form.material_preference = preset.material;
       this.form.prompt = preset.prompt;
       ElMessage.success(`已套用「${preset.name}」模板`);
+    },
+
+    recommendationImageUrls() {
+      const imageUrls = [];
+      if (this.draftAsset?.url) imageUrls.push(this.draftAsset.url);
+      if (this.refAsset?.url) imageUrls.push(this.refAsset.url);
+      return imageUrls;
+    },
+
+    async refreshStyleTemplates(showMessage = true) {
+      if (!this.isAuthenticated) return;
+      const imageUrls = this.recommendationImageUrls();
+      if (!imageUrls.length) {
+        if (showMessage) ElMessage.warning("请先上传底稿或风格参考图");
+        return;
+      }
+      this.recommendationLoading = true;
+      this.styleTemplateSeed += 1;
+      try {
+        const response = await this.request("/api/v1/recommendations/style-templates", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            room_type: this.form.room_type,
+            design_style: this.form.design_style,
+            color_preference: this.form.color_preference,
+            material_preference: this.form.material_preference,
+            prompt: this.form.prompt,
+            image_urls: imageUrls,
+            refresh_seed: this.styleTemplateSeed,
+          }),
+        });
+        if (response?.templates?.length) {
+          this.quickPresets = response.templates;
+          this.recommendationHint = response.summary || "已生成图片智能推荐模板";
+          this.activePresetName = "";
+          this.recommendationActive = response?.source === "vision";
+        }
+        if (showMessage) {
+          if (response?.source === "vision") {
+            ElMessage.success("图片智能推荐已生成");
+          } else {
+            ElMessage.warning(response?.summary || "智能推荐暂不可用，已保留初始模板");
+          }
+        }
+      } catch (err) {
+        if (showMessage) ElMessage.error(err.message);
+      } finally {
+        this.recommendationLoading = false;
+      }
     },
 
     async submitDesign() {

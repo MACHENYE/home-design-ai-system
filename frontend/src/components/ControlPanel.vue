@@ -55,12 +55,21 @@
 
     <div class="section-divider"></div>
 
-    <div class="panel-head tight">
+    <div class="panel-head tight design-demand-head">
       <div>
         <span class="eyebrow">2. 设计需求</span>
         <h2>选择风格并描述想要的效果</h2>
       </div>
+      <el-button
+        size="small"
+        :class="{ 'smart-recommend-active': recommendationActive }"
+        :loading="recommendationLoading"
+        @click="$emit('refresh-style-templates')"
+      >
+        智能推荐
+      </el-button>
     </div>
+    <p class="template-hint">{{ recommendationHint }}</p>
 
     <div class="preset-row">
       <button
@@ -207,11 +216,24 @@ export default {
       type: Function,
       required: true,
     },
+    recommendationLoading: {
+      type: Boolean,
+      default: false,
+    },
+    recommendationHint: {
+      type: String,
+      default: "上传底稿后，可由大模型识别图片并生成4个提示词模板",
+    },
+    recommendationActive: {
+      type: Boolean,
+      default: false,
+    },
   },
   emits: [
     "handle-file",
     "apply-quick-preset",
     "append-prompt",
+    "refresh-style-templates",
     "submit-design",
     "update:brushSize",
     "update:maskDirty",
