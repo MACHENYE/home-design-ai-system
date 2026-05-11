@@ -8,16 +8,15 @@
       @submit-auth="submitAuth"
     />
     <template v-else>
-      <app-header :current-user="currentUser" @logout="logout" />
+      <app-header :current-user="currentUser" @open-admin="openAdminPanel" @logout="logout" />
       <main class="workspace">
         <control-panel
           ref="controlPanelRef"
           :draft-preview="draftPreview"
           :draft-state="draftState"
-          :ref-preview="refPreview"
-          :ref-state="refState"
           :quick-presets="quickPresets"
           :presets="presets"
+          :aspect-ratios="aspectRatios"
           :prompt-chips="promptChips"
           :form="form"
           :brush-size="brushSize"
@@ -29,10 +28,12 @@
           :recommendation-loading="recommendationLoading"
           :recommendation-hint="recommendationHint"
           :recommendation-active="recommendationActive"
+          :prompt-optimizing="promptOptimizing"
           @handle-file="handleFile"
           @apply-quick-preset="applyQuickPreset"
           @append-prompt="appendPrompt"
           @refresh-style-templates="refreshStyleTemplates"
+          @optimize-prompt="optimizePrompt"
           @submit-design="submitDesign"
           @update:brush-size="brushSize = $event"
           @update:mask-dirty="maskDirty = $event"
@@ -68,6 +69,7 @@
         />
       </main>
       <image-dialogs v-model:image-preview="imagePreview" v-model:compare-preview="comparePreview" />
+      <admin-panel v-model="adminVisible" :dashboard="adminDashboard" :loading="adminLoading" @refresh-admin="loadAdminDashboard" />
     </template>
   </div>
 </template>
@@ -75,6 +77,7 @@
 import { nextTick } from "vue";
 import { ElMessage } from "element-plus";
 import AppHeader from "./components/AppHeader.vue";
+import AdminPanel from "./components/AdminPanel.vue";
 import AuthPanel from "./components/AuthPanel.vue";
 import ControlPanel from "./components/ControlPanel.vue";
 import ImageDialogs from "./components/ImageDialogs.vue";
@@ -150,8 +153,18 @@ const promptChips = [
   "保留通行动线",
 ];
 
+const aspectRatios = [
+  { label: "1:1", value: "1:1" },
+  { label: "16:9", value: "16:9" },
+  { label: "9:16", value: "9:16" },
+  { label: "4:3", value: "4:3" },
+  { label: "3:4", value: "3:4" },
+  { label: "自由", value: "" },
+];
+
 export default {
   components: {
+    AdminPanel,
     AppHeader,
     AuthPanel,
     ControlPanel,
@@ -161,7 +174,7 @@ export default {
 
   data() {
     return {
-      apiBaseInput: window.location.protocol === "file:" ? "http://127.0.0.1:8000" : "",
+      apiBaseInput: window.location.protocol === "file:" ? "http://127.0.0.1:8001" : "",
       authMode: "login",
       authLoading: false,
       authToken: localStorage.getItem("home-design-token") || "",
@@ -178,6 +191,7 @@ export default {
       presets: { ...defaultPresets },
       quickPresets,
       promptChips,
+      aspectRatios,
       draftAsset: null,
       refAsset: null,
       draftPreview: "",
@@ -193,8 +207,14 @@ export default {
       taskStateText: "等待提交",
       resultImage: "",
       pollTimer: null,
+      pollingTaskId: "",
+      pollTickCount: 0,
       selectedSavedSchemeId: "",
       savedSchemes: [],
+      adminVisible: false,
+      adminLoading: false,
+      adminDashboard: {},
+      promptOptimizing: false,
       recommendationLoading: false,
       recommendationHint: "上传底稿后，可由大模型识别图片并生成4个提示词模板",
       recommendationActive: false,
@@ -371,14 +391,14 @@ export default {
   },
 
   beforeUnmount() {
-    window.clearInterval(this.pollTimer);
+    window.clearTimeout(this.pollTimer);
   },
 
   methods: {
     apiBase() {
       const raw = this.apiBaseInput.trim();
       if (raw) return raw.replace(/\/$/, "");
-      if (window.location.protocol === "file:") return "http://127.0.0.1:8000";
+      if (window.location.protocol === "file:") return "http://127.0.0.1:8001";
       return "";
     },
 
@@ -403,7 +423,9 @@ export default {
         if (res.status === 401 && !path.includes("/api/v1/auth/")) {
           this.clearAuth();
         }
-        throw new Error(data?.detail || `HTTP ${res.status}`);
+        const error = new Error(data?.detail || `HTTP ${res.status}`);
+        error.status = res.status;
+        throw error;
       }
       return data;
     },
@@ -489,6 +511,23 @@ export default {
       this.loadPresets();
     },
 
+    async openAdminPanel() {
+      this.adminVisible = true;
+      await this.loadAdminDashboard();
+    },
+
+    async loadAdminDashboard() {
+      if (!this.isAuthenticated) return;
+      this.adminLoading = true;
+      try {
+        this.adminDashboard = await this.request("/api/v1/admin/dashboard");
+      } catch (err) {
+        ElMessage.error(err.message);
+      } finally {
+        this.adminLoading = false;
+      }
+    },
+
     previewImage(url, title = "图片预览") {
       if (!url) return;
       this.imagePreview = {
@@ -565,6 +604,7 @@ export default {
 
     setAsset(type, url, previewUrl) {
       const asset = { url, previewUrl };
+      this.prepareNewDesignView();
       this.quickPresets = initialQuickPresets.map((item) => ({ ...item }));
       this.recommendationActive = false;
       this.activePresetName = "";
@@ -579,6 +619,21 @@ export default {
         this.refPreview = previewUrl;
         this.refState = "已就绪";
       }
+    },
+
+    prepareNewDesignView() {
+      window.clearTimeout(this.pollTimer);
+      this.pollingTaskId = "";
+      this.pollTickCount = 0;
+      this.generatingTaskId = "";
+      this.currentTaskId = "";
+      this.selectedHistoryTaskId = "";
+      this.selectedRecord = null;
+      this.selectedSavedSchemeId = "";
+      this.resultImage = "";
+      this.taskStateText = "等待提交";
+      this.activeTab = "studio";
+      this.project.stage = "方案准备";
     },
 
     async uploadBlob(blob, filename, contentType = "image/png") {
@@ -613,6 +668,38 @@ export default {
     appendPrompt(text) {
       const trimmed = this.form.prompt.trim();
       this.form.prompt = trimmed ? `${trimmed}，${text}` : text;
+    },
+
+    async optimizePrompt() {
+      if (!this.form.prompt.trim()) {
+        ElMessage.warning("请先填写需求描述");
+        return;
+      }
+      this.promptOptimizing = true;
+      try {
+        const response = await this.request("/api/v1/prompts/optimize", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt: this.form.prompt,
+            room_type: this.form.room_type,
+            design_style: this.form.design_style,
+            color_preference: this.form.color_preference,
+            material_preference: this.form.material_preference,
+            aspect_ratio: this.form.aspect_ratio,
+          }),
+        });
+        this.form.prompt = response.prompt || this.form.prompt;
+        ElMessage.success(response.summary || "提示词已优化");
+      } catch (err) {
+        if (err.status === 404) {
+          ElMessage.error("后端未加载提示词优化接口，请重启 start_fullstack.bat 后再试");
+        } else {
+          ElMessage.error(err.message);
+        }
+      } finally {
+        this.promptOptimizing = false;
+      }
     },
 
     isPresetActive(preset) {
@@ -728,9 +815,7 @@ export default {
         this.generatingTaskId = submitted.task_id;
         this.taskStateText = `处理中 · ${this.shortTaskId(submitted.task_id)}`;
         this.addHistory(submitted.task_id, "处理中", Date.now());
-        await this.refreshTask(submitted.task_id, true);
-        await this.loadDesignRecord(submitted.task_id, false);
-        this.startPolling(submitted.task_id);
+        this.startPolling(submitted.task_id, true);
       } catch (err) {
         this.taskStateText = "提交失败";
         ElMessage.error(err.message);
@@ -739,9 +824,22 @@ export default {
       }
     },
 
-    startPolling(taskId) {
-      window.clearInterval(this.pollTimer);
-      this.pollTimer = window.setInterval(() => this.refreshTask(taskId, false), 2600);
+    startPolling(taskId, immediate = false) {
+      window.clearTimeout(this.pollTimer);
+      this.pollingTaskId = taskId;
+      this.pollTickCount = 0;
+
+      const tick = async () => {
+        if (this.pollingTaskId !== taskId) return;
+        await this.refreshTask(taskId, false);
+        if (this.pollingTaskId !== taskId || this.generatingTaskId !== taskId) return;
+
+        this.pollTickCount += 1;
+        const delay = this.pollTickCount < 30 ? 1000 : 2200;
+        this.pollTimer = window.setTimeout(tick, delay);
+      };
+
+      this.pollTimer = window.setTimeout(tick, immediate ? 0 : 800);
     },
 
     refreshCurrentTask() {
@@ -779,7 +877,9 @@ export default {
         this.resultImage = task.result_image_url;
         this.activeTab = "studio";
       }
-      this.loadDesignRecord(task.task_id, false);
+      if (task.result_image_url || [3, 4].includes(status)) {
+        this.loadDesignRecord(task.task_id, false);
+      }
       if (task.error_message) {
         ElMessage.error(task.error_message);
       }
@@ -787,7 +887,10 @@ export default {
         if (task.task_id === this.generatingTaskId) {
           this.generatingTaskId = "";
         }
-        window.clearInterval(this.pollTimer);
+        if (task.task_id === this.pollingTaskId) {
+          this.pollingTaskId = "";
+        }
+        window.clearTimeout(this.pollTimer);
       }
     },
 
@@ -1071,7 +1174,6 @@ export default {
       this.selectedSavedSchemeId = "";
       this.selectedHistoryTaskId = taskId;
       this.activeTab = "archive";
-      this.clearInputAssets();
       this.selectedRecord = this.recordCache[taskId] || null;
       if (!this.generatingTaskId) {
         this.currentTaskId = taskId;

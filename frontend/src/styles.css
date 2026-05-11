@@ -173,6 +173,87 @@ body {
   box-shadow: inset 0 0 0 1px rgba(11, 111, 96, 0.22);
 }
 
+.admin-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.admin-kpis,
+.admin-charts,
+.admin-tables {
+  display: grid;
+  gap: 12px;
+}
+
+.admin-kpis {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 14px;
+}
+
+.admin-kpi,
+.admin-charts section,
+.admin-tables section {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 14px;
+}
+
+.admin-kpi span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.admin-kpi strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 24px;
+}
+
+.admin-charts,
+.admin-tables {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 12px;
+}
+
+.bar-chart {
+  display: grid;
+  gap: 9px;
+  margin-top: 12px;
+}
+
+.bar-row {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr) 36px;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.bar-row div {
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #edf1f2;
+}
+
+.bar-row i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
+.bar-row em {
+  color: var(--text);
+  font-style: normal;
+  text-align: right;
+}
+
 .eyebrow {
   display: block;
   margin-bottom: 4px;
@@ -185,8 +266,16 @@ body {
 .form-grid,
 .preview-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+}
+
+.upload-grid {
+  grid-template-columns: 1fr;
+}
+
+.form-grid,
+.preview-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .upload-box .el-upload,
@@ -328,6 +417,34 @@ body {
   flex-wrap: wrap;
   gap: 8px;
   margin: -2px 0 14px;
+}
+
+.prompt-header-action {
+  display: flex;
+  justify-content: flex-end;
+  margin: -8px 0 8px;
+}
+
+.ratio-row {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.ratio-chip {
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.ratio-chip.active {
+  border-color: var(--accent);
+  background: var(--accent-weak);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px rgba(11, 111, 96, 0.22);
 }
 
 .prompt-chip {

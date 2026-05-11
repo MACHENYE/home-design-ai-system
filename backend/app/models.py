@@ -164,6 +164,20 @@ class StyleTemplateResponse(BaseModel):
     source: str = "history"
 
 
+class PromptOptimizeRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=1200)
+    room_type: str | None = None
+    design_style: str | None = None
+    color_preference: str | None = None
+    material_preference: str | None = None
+    aspect_ratio: str | None = None
+
+
+class PromptOptimizeResponse(BaseModel):
+    prompt: str
+    summary: str | None = None
+
+
 class NanoBananaCallback(BaseModel):
     taskId: str
     status: int

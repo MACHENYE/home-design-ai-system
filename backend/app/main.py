@@ -29,6 +29,8 @@ from .models import (
     GenerateRequest,
     GenerateType,
     NanoBananaTaskStatus,
+    PromptOptimizeRequest,
+    PromptOptimizeResponse,
     StyleTemplate,
     StyleTemplateRequest,
     StyleTemplateResponse,
@@ -486,6 +488,47 @@ def _extract_chat_completion_text(payload: dict[str, object]) -> str:
     return content.strip() if isinstance(content, str) else ""
 
 
+async def _bailian_text_completion(
+    system_text: str,
+    user_text: str,
+    *,
+    model: str | None = None,
+    temperature: float = 0.45,
+    max_tokens: int = 900,
+) -> str:
+    api_key = _bailian_api_key()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="请在 backend/.env 中配置 BAILIAN_API_KEY 或 DASHSCOPE_API_KEY")
+    payload = {
+        "model": model or settings.bailian_text_model,
+        "messages": [
+            {"role": "system", "content": system_text},
+            {"role": "user", "content": user_text},
+        ],
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    endpoint = settings.bailian_base_url.rstrip("/") + "/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=settings.bailian_timeout_s) as bailian_client:
+            response = await bailian_client.post(endpoint, headers=headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=502, detail=_bailian_error_summary(exc.response.status_code, exc.response.text)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=_bailian_error_summary(body=str(exc))) from exc
+
+    text = _extract_chat_completion_text(data)
+    if not text:
+        raise HTTPException(status_code=502, detail="百炼未返回可用内容")
+    return text
+
+
 def _json_object_from_text(text: str) -> dict[str, object] | None:
     if not text:
         return None
@@ -805,6 +848,43 @@ async def design_presets() -> dict[str, list[str]]:
         "colors": ["暖白+原木", "黑白灰", "米色+胡桃木", "低饱和莫兰迪", "奶油色+浅咖", "深色沉稳"],
         "materials": ["原木", "微水泥", "大理石", "藤编", "金属线条", "布艺", "皮革", "玻璃"],
     }
+
+
+@app.get("/api/v1/admin/dashboard")
+async def admin_dashboard(_user: UserProfile = Depends(current_user)) -> dict[str, object]:
+    return store.admin_dashboard(limit=160)
+
+
+@app.post("/api/v1/prompts/optimize", response_model=PromptOptimizeResponse)
+async def optimize_prompt(req: PromptOptimizeRequest, _user: UserProfile = Depends(current_user)) -> PromptOptimizeResponse:
+    system_text = (
+        "你是家装设计图生成系统的提示词优化助手。"
+        "请将用户的原始需求改写为适合图生图家装渲染模型使用的中文提示词，输出必须稳定、具体、可执行。"
+        "只返回优化后的提示词，不要返回标题、解释、Markdown。"
+    )
+    user_text = (
+        f"原始提示词：{req.prompt}\n"
+        f"空间：{req.room_type or '未指定'}\n"
+        f"风格：{req.design_style or '未指定'}\n"
+        f"配色：{req.color_preference or '未指定'}\n"
+        f"材质：{req.material_preference or '未指定'}\n"
+        f"比例：{req.aspect_ratio or '未指定'}\n"
+        "优化要求：\n"
+        "1. 保留用户原意，不改变指定空间、风格、配色和材质。\n"
+        "2. 补充空间结构、光线氛围、家具比例、收纳设计、材质肌理和真实渲染质感。\n"
+        "3. 强调保留门窗位置、主要空间边界、承重结构和合理家具比例。\n"
+        "4. 避免生成不合理家具、夸张装饰、杂乱布局、低清晰度画面。\n"
+        "5. 控制在120到220个中文字符，使用一段完整中文描述。"
+    )
+    optimized = await _bailian_text_completion(
+        system_text,
+        user_text,
+        model=settings.bailian_text_model,
+        temperature=0.35,
+        max_tokens=500,
+    )
+    optimized = optimized.strip().strip("`").strip()
+    return PromptOptimizeResponse(prompt=optimized[:500], summary="已根据当前空间、风格和比例优化提示词。")
 
 
 @app.post("/api/v1/assets/upload", response_model=AssetUploadResponse)

@@ -3,7 +3,7 @@
     <div class="panel-head">
       <div>
         <span class="eyebrow">1. 输入素材</span>
-        <h2>上传底稿和参考图</h2>
+        <h2>上传底稿</h2>
       </div>
     </div>
 
@@ -27,28 +27,6 @@
         <template v-else>
           <strong>设计底稿</strong>
           <span>{{ draftState }}</span>
-        </template>
-      </el-upload>
-
-      <el-upload
-        class="upload-box"
-        :class="{ 'has-image': Boolean(refPreview) }"
-        drag
-        :show-file-list="false"
-        :auto-upload="false"
-        accept="image/*"
-        :on-change="(file) => $emit('handle-file', file, 'ref')"
-      >
-        <div v-if="refPreview" class="upload-preview-content">
-          <img :src="refPreview" alt="reference" />
-          <div>
-            <strong>风格参考</strong>
-            <span>{{ refState }}</span>
-          </div>
-        </div>
-        <template v-else>
-          <strong>风格参考</strong>
-          <span>{{ refState }}</span>
         </template>
       </el-upload>
     </div>
@@ -110,7 +88,26 @@
       </div>
 
       <el-form-item label="需求描述">
+        <div class="prompt-header-action">
+          <span></span>
+          <el-button size="small" :loading="promptOptimizing" @click="$emit('optimize-prompt')">提示词优化</el-button>
+        </div>
         <el-input v-model="form.prompt" type="textarea" :rows="5" resize="vertical"></el-input>
+      </el-form-item>
+
+      <el-form-item label="图片比例">
+        <div class="ratio-row">
+          <button
+            v-for="ratio in aspectRatios"
+            :key="ratio.value"
+            type="button"
+            class="ratio-chip"
+            :class="{ active: form.aspect_ratio === ratio.value }"
+            @click="form.aspect_ratio = ratio.value"
+          >
+            <span>{{ ratio.label }}</span>
+          </button>
+        </div>
       </el-form-item>
 
       <div class="prompt-chip-group">
@@ -168,13 +165,13 @@ export default {
       type: String,
       required: true,
     },
-    refPreview: {
-      type: String,
-      default: "",
-    },
-    refState: {
-      type: String,
+    aspectRatios: {
+      type: Array,
       required: true,
+    },
+    promptOptimizing: {
+      type: Boolean,
+      default: false,
     },
     quickPresets: {
       type: Array,
@@ -234,6 +231,7 @@ export default {
     "apply-quick-preset",
     "append-prompt",
     "refresh-style-templates",
+    "optimize-prompt",
     "submit-design",
     "update:brushSize",
     "update:maskDirty",

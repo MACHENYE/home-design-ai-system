@@ -456,6 +456,72 @@ class TasksStore:
             conn.commit()
             return cur.rowcount > 0
 
+    def admin_dashboard(self, limit: int = 120) -> dict[str, Any]:
+        limit = max(20, min(limit, 300))
+        with self._connect() as conn:
+            totals = conn.execute(
+                """
+                SELECT
+                  (SELECT COUNT(*) FROM users) AS users,
+                  (SELECT COUNT(*) FROM design_records) AS records,
+                  (SELECT COUNT(*) FROM favorite_schemes) AS favorites,
+                  (SELECT COUNT(*) FROM design_records WHERE status=3) AS successes,
+                  (SELECT COUNT(*) FROM design_records WHERE status=4) AS failures
+                """
+            ).fetchone()
+            users = conn.execute(
+                """
+                SELECT
+                  users.id,
+                  users.username,
+                  users.created_at,
+                  COUNT(design_records.task_id) AS total_records,
+                  SUM(CASE WHEN design_records.status=3 THEN 1 ELSE 0 END) AS success_records,
+                  SUM(CASE WHEN design_records.status=4 THEN 1 ELSE 0 END) AS failed_records,
+                  MAX(design_records.updated_at) AS last_used_at
+                FROM users
+                LEFT JOIN design_records ON design_records.user_id=users.id
+                GROUP BY users.id
+                ORDER BY COALESCE(last_used_at, users.created_at) DESC
+                """
+            ).fetchall()
+            style_rows = conn.execute(
+                """
+                SELECT COALESCE(design_style, '未设置') AS name, COUNT(*) AS value
+                FROM design_records
+                GROUP BY COALESCE(design_style, '未设置')
+                ORDER BY value DESC
+                LIMIT 8
+                """
+            ).fetchall()
+            daily_rows = conn.execute(
+                """
+                SELECT date(created_at, 'unixepoch', 'localtime') AS day, COUNT(*) AS value
+                FROM design_records
+                GROUP BY day
+                ORDER BY day DESC
+                LIMIT 7
+                """
+            ).fetchall()
+            records = conn.execute(
+                """
+                SELECT design_records.*, users.username
+                FROM design_records
+                LEFT JOIN users ON users.id=design_records.user_id
+                ORDER BY design_records.created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+        return {
+            "summary": dict(totals) if totals else {},
+            "users": [dict(row) for row in users],
+            "styleStats": [dict(row) for row in style_rows],
+            "dailyStats": list(reversed([dict(row) for row in daily_rows])),
+            "records": [dict(row) for row in records],
+        }
+
     def _row_to_favorite_scheme(self, row: sqlite3.Row) -> FavoriteScheme:
         return FavoriteScheme(
             id=row["id"],

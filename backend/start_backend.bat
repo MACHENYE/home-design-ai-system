@@ -12,17 +12,17 @@ if not exist ".venv\Scripts\python.exe" (
   exit /b 1
 )
 
-REM If port 8000 is already in use, stop the listener(s) first.
-for /f "tokens=5" %%p in ('netstat -ano ^| findstr :8000 ^| findstr LISTENING') do (
-  echo [INFO] Port 8000 is in use. Stopping PID %%p ...
+REM If port 8001 is already in use, stop the listener(s) first.
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr :8001 ^| findstr LISTENING') do (
+  echo [INFO] Port 8001 is in use. Stopping PID %%p ...
   taskkill /PID %%p /F >nul 2>&1
 )
 
 REM Give Windows a moment to release the socket.
 >nul timeout /t 1 /nobreak
 
-echo [INFO] Starting backend on http://127.0.0.1:8000 ...
+echo [INFO] Starting backend on http://127.0.0.1:8001 ...
 echo [INFO] Press Ctrl+C to stop.
 echo.
 
-".venv\Scripts\python.exe" -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+".venv\Scripts\python.exe" -m uvicorn app.main:app --host 127.0.0.1 --port 8001

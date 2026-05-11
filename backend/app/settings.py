@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     dashscope_api_key: str = ""
     bailian_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     bailian_vision_model: str = "qwen3-vl-plus"
+    bailian_text_model: str = "qwen-plus"
     bailian_timeout_s: float = 35.0
 
     # Legacy OpenAI names are kept so old .env files do not fail to load.
