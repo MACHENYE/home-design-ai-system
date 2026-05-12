@@ -808,6 +808,12 @@ async def current_user(authorization: str | None = Header(default=None)) -> User
     return user
 
 
+async def require_admin(user: UserProfile = Depends(current_user)) -> UserProfile:
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="只有 admin 用户可以访问管理后台")
+    return user
+
+
 async def optional_user(authorization: str | None = Header(default=None)) -> UserProfile | None:
     token = _extract_bearer_token(authorization)
     if not token:
@@ -823,6 +829,8 @@ async def healthz() -> dict[str, str]:
 @app.post("/api/v1/auth/register", response_model=AuthResponse)
 async def register(req: UserRegisterRequest) -> AuthResponse:
     username = req.username.strip()
+    if store.username_exists(username):
+        raise HTTPException(status_code=409, detail="用户名已存在")
     try:
         user = store.create_user(username, _hash_password(req.password))
     except sqlite3.IntegrityError as exc:
@@ -874,7 +882,7 @@ async def design_presets() -> dict[str, list[str]]:
 
 
 @app.get("/api/v1/admin/dashboard")
-async def admin_dashboard(_user: UserProfile = Depends(current_user)) -> dict[str, object]:
+async def admin_dashboard(_user: UserProfile = Depends(require_admin)) -> dict[str, object]:
     return store.admin_dashboard(limit=160)
 
 
@@ -1093,6 +1101,14 @@ async def save_design_feedback(
 @app.delete("/api/v1/design/records/{task_id}")
 async def delete_design_record(task_id: str, user: UserProfile = Depends(current_user)) -> dict[str, bool]:
     deleted = store.delete_design_record(task_id, user_id=user.id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="design record not found")
+    return {"deleted": True}
+
+
+@app.delete("/api/v1/admin/design/records/{task_id}")
+async def admin_delete_design_record(task_id: str, _user: UserProfile = Depends(require_admin)) -> dict[str, bool]:
+    deleted = store.admin_delete_design_record(task_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="design record not found")
     return {"deleted": True}

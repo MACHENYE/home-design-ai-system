@@ -8,77 +8,96 @@
       @submit-auth="submitAuth"
     />
     <template v-else>
-      <app-header :current-user="currentUser" @open-admin="openAdminPanel" @logout="logout" />
-      <main class="workspace">
-        <control-panel
-          ref="controlPanelRef"
-          :draft-preview="draftPreview"
-          :draft-state="draftState"
-          :quick-presets="quickPresets"
-          :presets="presets"
-          :aspect-ratios="aspectRatios"
-          :prompt-chips="promptChips"
-          :form="form"
-          :brush-size="brushSize"
-          :mask-dirty="maskDirty"
-          :mask-state="maskState"
-          :submitting="submitting"
-          :task-state-text="taskStateText"
-          :is-preset-active="isPresetActive"
-          :recommendation-loading="recommendationLoading"
-          :recommendation-hint="recommendationHint"
-          :recommendation-active="recommendationActive"
-          :prompt-optimizing="promptOptimizing"
-          @handle-file="handleFile"
-          @apply-quick-preset="applyQuickPreset"
-          @append-prompt="appendPrompt"
-          @refresh-style-templates="refreshStyleTemplates"
-          @optimize-prompt="optimizePrompt"
-          @submit-design="submitDesign"
-          @update:brush-size="brushSize = $event"
-          @update:mask-dirty="maskDirty = $event"
-          @update:mask-state="maskState = $event"
-        />
-        <result-panel
-          :display-result-image="displayResultImage"
-          :display-draft-preview="displayDraftPreview"
-          :display-ref-preview="displayRefPreview"
-          :is-generating="isGenerating"
-          :task-state-text="taskStateText"
-          :current-task-id="currentTaskId"
-          :selected-record="selectedRecord"
-          :saved-schemes="savedSchemes"
-          :selected-saved-scheme-id="selectedSavedSchemeId"
-          :history="history"
-          :selected-history-task-id="selectedHistoryTaskId"
-          :presets="presets"
-          :record-style-filter="recordStyleFilter"
-          :feedback-submitting="feedbackSubmitting"
-          :short-task-id="shortTaskId"
-          :can-compare-record="canCompareRecord"
-          @save-current-scheme="saveCurrentScheme"
-          @download-result-image="downloadResultImage"
-          @save-pdf-report="savePdfReport"
-          @compare-record-images="compareRecordImages"
-          @delete-current-record="deleteCurrentRecord"
-          @preview-image="previewImage"
-          @load-favorites="loadFavorites"
-          @select-saved-scheme="selectSavedScheme"
-          @remove-favorite="removeFavorite"
-          @save-feedback="saveDesignFeedback"
-          @update:record-style-filter="recordStyleFilter = $event"
-          @load-design-records="loadDesignRecords"
-          @open-history="openHistory"
-        />
-      </main>
+      <app-header :current-user="currentUser" @logout="logout" />
+      <div class="app-shell" :class="{ 'without-side-nav': !isAdmin }">
+        <aside v-if="isAdmin" class="side-nav">
+          <button :class="{ active: activeTab !== 'admin' }" type="button" @click="activeTab = 'studio'">
+            设计工作台
+          </button>
+          <button :class="{ active: activeTab === 'admin' }" type="button" @click="openAdminPanel">
+            管理后台
+          </button>
+        </aside>
+
+        <main v-if="activeTab !== 'admin'" class="workspace">
+          <control-panel
+            ref="controlPanelRef"
+            :draft-preview="draftPreview"
+            :draft-state="draftState"
+            :quick-presets="quickPresets"
+            :presets="presets"
+            :aspect-ratios="aspectRatios"
+            :prompt-chips="promptChips"
+            :form="form"
+            :brush-size="brushSize"
+            :mask-dirty="maskDirty"
+            :mask-state="maskState"
+            :submitting="submitting"
+            :task-state-text="taskStateText"
+            :is-preset-active="isPresetActive"
+            :recommendation-loading="recommendationLoading"
+            :recommendation-hint="recommendationHint"
+            :recommendation-active="recommendationActive"
+            :prompt-optimizing="promptOptimizing"
+            @handle-file="handleFile"
+            @apply-quick-preset="applyQuickPreset"
+            @append-prompt="appendPrompt"
+            @refresh-style-templates="refreshStyleTemplates"
+            @optimize-prompt="optimizePrompt"
+            @submit-design="submitDesign"
+            @update:brush-size="brushSize = $event"
+            @update:mask-dirty="maskDirty = $event"
+            @update:mask-state="maskState = $event"
+          />
+          <result-panel
+            :display-result-image="displayResultImage"
+            :display-draft-preview="displayDraftPreview"
+            :display-ref-preview="displayRefPreview"
+            :is-generating="isGenerating"
+            :task-state-text="taskStateText"
+            :current-task-id="currentTaskId"
+            :selected-record="selectedRecord"
+            :saved-schemes="savedSchemes"
+            :selected-saved-scheme-id="selectedSavedSchemeId"
+            :history="history"
+            :selected-history-task-id="selectedHistoryTaskId"
+            :presets="presets"
+            :record-style-filter="recordStyleFilter"
+            :feedback-submitting="feedbackSubmitting"
+            :short-task-id="shortTaskId"
+            :can-compare-record="canCompareRecord"
+            @save-current-scheme="saveCurrentScheme"
+            @download-result-image="downloadResultImage"
+            @save-pdf-report="savePdfReport"
+            @compare-record-images="compareRecordImages"
+            @delete-current-record="deleteCurrentRecord"
+            @preview-image="previewImage"
+            @load-favorites="loadFavorites"
+            @select-saved-scheme="selectSavedScheme"
+            @remove-favorite="removeFavorite"
+            @save-feedback="saveDesignFeedback"
+            @update:record-style-filter="recordStyleFilter = $event"
+            @load-design-records="loadDesignRecords"
+            @open-history="openHistory"
+          />
+        </main>
+
+        <main v-else class="admin-workspace">
+          <admin-panel
+            :dashboard="adminDashboard"
+            :loading="adminLoading"
+            @refresh-admin="loadAdminDashboard"
+            @delete-record="deleteAdminRecord"
+          />
+        </main>
+      </div>
       <image-dialogs v-model:image-preview="imagePreview" v-model:compare-preview="comparePreview" />
-      <admin-panel v-model="adminVisible" :dashboard="adminDashboard" :loading="adminLoading" @refresh-admin="loadAdminDashboard" />
     </template>
   </div>
 </template>
 <script>
 import { nextTick } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import AppHeader from "./components/AppHeader.vue";
 import AdminPanel from "./components/AdminPanel.vue";
 import AuthPanel from "./components/AuthPanel.vue";
@@ -214,7 +233,6 @@ export default {
       pollTickCount: 0,
       selectedSavedSchemeId: "",
       savedSchemes: [],
-      adminVisible: false,
       adminLoading: false,
       adminDashboard: {},
       promptOptimizing: false,
@@ -266,6 +284,10 @@ export default {
   computed: {
     isAuthenticated() {
       return Boolean(this.authToken && this.currentUser);
+    },
+
+    isAdmin() {
+      return this.currentUser?.role === "admin";
     },
 
     providerText() {
@@ -468,6 +490,7 @@ export default {
       this.recordCache = {};
       this.selectedRecord = null;
       this.selectedHistoryTaskId = "";
+      this.activeTab = "studio";
       nextTick(() => this.setupCanvas());
       this.loadDesignRecords(false);
       this.loadFavorites(false);
@@ -477,6 +500,9 @@ export default {
       try {
         const user = await this.request("/api/v1/auth/me");
         this.currentUser = user;
+        if (!this.isAdmin && this.activeTab === "admin") {
+          this.activeTab = "studio";
+        }
         nextTick(() => this.setupCanvas());
         this.loadDesignRecords(false);
         this.loadFavorites(false);
@@ -497,6 +523,7 @@ export default {
       this.recordCache = {};
       this.selectedRecord = null;
       this.selectedHistoryTaskId = "";
+      this.activeTab = "studio";
       localStorage.removeItem("home-design-token");
     },
 
@@ -516,12 +543,16 @@ export default {
     },
 
     async openAdminPanel() {
-      this.adminVisible = true;
+      if (!this.isAdmin) {
+        ElMessage.warning("只有 admin 用户可以访问管理后台");
+        return;
+      }
+      this.activeTab = "admin";
       await this.loadAdminDashboard();
     },
 
     async loadAdminDashboard() {
-      if (!this.isAuthenticated) return;
+      if (!this.isAuthenticated || !this.isAdmin) return;
       this.adminLoading = true;
       try {
         this.adminDashboard = await this.request("/api/v1/admin/dashboard");
@@ -529,6 +560,33 @@ export default {
         ElMessage.error(err.message);
       } finally {
         this.adminLoading = false;
+      }
+    },
+
+    async deleteAdminRecord(record) {
+      if (!record?.task_id) return;
+      try {
+        await ElMessageBox.confirm(
+          `确定删除用户「${record.username || "未知"}」的这条生成方案吗？删除后会同步移除相关任务和收藏记录。`,
+          "删除生成方案",
+          {
+            type: "warning",
+            confirmButtonText: "删除",
+            cancelButtonText: "取消",
+          },
+        );
+      } catch {
+        return;
+      }
+
+      try {
+        await this.request(`/api/v1/admin/design/records/${encodeURIComponent(record.task_id)}`, {
+          method: "DELETE",
+        });
+        ElMessage.success("生成方案已删除");
+        await this.loadAdminDashboard();
+      } catch (err) {
+        ElMessage.error(err.message);
       }
     },
 

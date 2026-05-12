@@ -8,7 +8,6 @@
     </div>
     <div class="user-box">
       <el-tag effect="plain">{{ currentUser.username }}</el-tag>
-      <el-button size="small" @click="$emit('open-admin')">管理后台</el-button>
       <el-button size="small" @click="$emit('logout')">退出登录</el-button>
     </div>
   </header>
@@ -23,6 +22,6 @@ export default {
       required: true,
     },
   },
-  emits: ["logout", "open-admin"],
+  emits: ["logout"],
 };
 </script>

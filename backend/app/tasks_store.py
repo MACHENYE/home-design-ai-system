@@ -82,6 +82,7 @@ class TasksStore:
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   username TEXT NOT NULL UNIQUE,
                   password_hash TEXT NOT NULL,
+                  role TEXT NOT NULL DEFAULT 'user',
                   created_at INTEGER NOT NULL
                 )
                 """
@@ -120,6 +121,10 @@ class TasksStore:
             self._ensure_column(conn, "design_records", "satisfaction_score", "INTEGER NULL")
             self._ensure_column(conn, "design_records", "feedback_text", "TEXT NULL")
             self._ensure_column(conn, "design_records", "feedback_updated_at", "INTEGER NULL")
+            self._ensure_column(conn, "users", "role", "TEXT NOT NULL DEFAULT 'user'")
+            conn.execute("DROP INDEX IF EXISTS idx_users_username_lower")
+            conn.execute("UPDATE users SET role='user' WHERE username!='admin' AND role='admin'")
+            conn.execute("UPDATE users SET role='admin' WHERE username='admin'")
             conn.commit()
         self._backfill_design_records()
 
@@ -457,23 +462,43 @@ class TasksStore:
             conn.commit()
             return cur.rowcount > 0
 
+    def admin_delete_design_record(self, task_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM design_records WHERE task_id=?", (task_id,))
+            conn.execute("DELETE FROM favorite_schemes WHERE task_id=?", (task_id,))
+            conn.execute("DELETE FROM tasks WHERE task_id=?", (task_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
     def create_user(self, username: str, password_hash: str) -> UserProfile:
         now = int(time.time())
+        role = "admin" if username == "admin" else "user"
         with self._connect() as conn:
             cur = conn.execute(
-                "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
-                (username, password_hash, now),
+                "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
+                (username, password_hash, role, now),
             )
             conn.commit()
             user_id = int(cur.lastrowid)
-        return UserProfile(id=user_id, username=username, created_at=now)
+        return UserProfile(id=user_id, username=username, role=role, created_at=now)
+
+    def username_exists(self, username: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM users WHERE username=? LIMIT 1",
+                (username,),
+            ).fetchone()
+        return row is not None
 
     def get_user_by_username(self, username: str) -> tuple[UserProfile, str] | None:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
         if not row:
             return None
-        return UserProfile(id=row["id"], username=row["username"], created_at=row["created_at"]), row["password_hash"]
+        return (
+            UserProfile(id=row["id"], username=row["username"], role=row["role"], created_at=row["created_at"]),
+            row["password_hash"],
+        )
 
     def create_session(self, token: str, user_id: int, expires_at: int | None = None) -> None:
         now = int(time.time())
@@ -498,7 +523,7 @@ class TasksStore:
             ).fetchone()
         if not row:
             return None
-        return UserProfile(id=row["id"], username=row["username"], created_at=row["created_at"])
+        return UserProfile(id=row["id"], username=row["username"], role=row["role"], created_at=row["created_at"])
 
     def delete_session(self, token: str) -> None:
         with self._connect() as conn:
@@ -557,7 +582,10 @@ class TasksStore:
                   (SELECT COUNT(*) FROM design_records WHERE status=3) AS successes,
                   (SELECT COUNT(*) FROM design_records WHERE status=4) AS failures,
                   (SELECT COUNT(*) FROM design_records WHERE satisfaction_score IS NOT NULL) AS feedbacks,
-                  (SELECT ROUND(AVG(satisfaction_score), 2) FROM design_records WHERE satisfaction_score IS NOT NULL) AS avg_satisfaction
+                  (SELECT ROUND(AVG(satisfaction_score), 2) FROM design_records WHERE satisfaction_score IS NOT NULL) AS avg_satisfaction,
+                  (SELECT ROUND(AVG(lighting_score), 2) FROM design_records WHERE lighting_score IS NOT NULL) AS avg_lighting,
+                  (SELECT ROUND(AVG(style_match_score), 2) FROM design_records WHERE style_match_score IS NOT NULL) AS avg_style_match,
+                  (SELECT ROUND(AVG(space_utilization_score), 2) FROM design_records WHERE space_utilization_score IS NOT NULL) AS avg_space_utilization
                 """
             ).fetchone()
             users = conn.execute(
@@ -565,6 +593,7 @@ class TasksStore:
                 SELECT
                   users.id,
                   users.username,
+                  users.role,
                   users.created_at,
                   COUNT(design_records.task_id) AS total_records,
                   SUM(CASE WHEN design_records.status=3 THEN 1 ELSE 0 END) AS success_records,
@@ -584,6 +613,41 @@ class TasksStore:
                 GROUP BY COALESCE(design_style, '未设置')
                 ORDER BY value DESC
                 LIMIT 8
+                """
+            ).fetchall()
+            room_rows = conn.execute(
+                """
+                SELECT COALESCE(room_type, '未设置') AS name, COUNT(*) AS value
+                FROM design_records
+                GROUP BY COALESCE(room_type, '未设置')
+                ORDER BY value DESC
+                LIMIT 8
+                """
+            ).fetchall()
+            color_rows = conn.execute(
+                """
+                SELECT COALESCE(color_preference, '未设置') AS name, COUNT(*) AS value
+                FROM design_records
+                GROUP BY COALESCE(color_preference, '未设置')
+                ORDER BY value DESC
+                LIMIT 8
+                """
+            ).fetchall()
+            material_rows = conn.execute(
+                """
+                SELECT COALESCE(material_preference, '未设置') AS name, COUNT(*) AS value
+                FROM design_records
+                GROUP BY COALESCE(material_preference, '未设置')
+                ORDER BY value DESC
+                LIMIT 8
+                """
+            ).fetchall()
+            status_rows = conn.execute(
+                """
+                SELECT status AS name, COUNT(*) AS value
+                FROM design_records
+                GROUP BY status
+                ORDER BY status ASC
                 """
             ).fetchall()
             daily_rows = conn.execute(
@@ -610,6 +674,10 @@ class TasksStore:
             "summary": dict(totals) if totals else {},
             "users": [dict(row) for row in users],
             "styleStats": [dict(row) for row in style_rows],
+            "roomStats": [dict(row) for row in room_rows],
+            "colorStats": [dict(row) for row in color_rows],
+            "materialStats": [dict(row) for row in material_rows],
+            "statusStats": [dict(row) for row in status_rows],
             "dailyStats": list(reversed([dict(row) for row in daily_rows])),
             "records": [dict(row) for row in records],
         }

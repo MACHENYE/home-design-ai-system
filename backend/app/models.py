@@ -19,6 +19,7 @@ class UserLoginRequest(BaseModel):
 class UserProfile(BaseModel):
     id: int
     username: str
+    role: str = "user"
     created_at: int | None = None
 
 
