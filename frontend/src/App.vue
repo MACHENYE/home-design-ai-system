@@ -11,15 +11,18 @@
       <app-header :current-user="currentUser" @logout="logout" />
       <div class="app-shell" :class="{ 'without-side-nav': !isAdmin }">
         <aside v-if="isAdmin" class="side-nav">
-          <button :class="{ active: activeTab !== 'admin' }" type="button" @click="activeTab = 'studio'">
+          <button :class="{ active: activeTab === 'studio' }" type="button" @click="activeTab = 'studio'">
             设计工作台
           </button>
           <button :class="{ active: activeTab === 'admin' }" type="button" @click="openAdminPanel">
             管理后台
           </button>
+          <button :class="{ active: activeTab === 'logs' }" type="button" @click="openAdminLogs">
+            查看日志
+          </button>
         </aside>
 
-        <main v-if="activeTab !== 'admin'" class="workspace">
+        <main v-if="activeTab === 'studio'" class="workspace">
           <control-panel
             ref="controlPanelRef"
             :draft-preview="draftPreview"
@@ -82,12 +85,20 @@
           />
         </main>
 
-        <main v-else class="admin-workspace">
+        <main v-else-if="activeTab === 'admin'" class="admin-workspace">
           <admin-panel
             :dashboard="adminDashboard"
             :loading="adminLoading"
             @refresh-admin="loadAdminDashboard"
             @delete-record="deleteAdminRecord"
+          />
+        </main>
+
+        <main v-else class="admin-workspace">
+          <admin-logs-panel
+            :logs="adminLogs"
+            :loading="adminLogsLoading"
+            @refresh-logs="loadAdminLogs"
           />
         </main>
       </div>
@@ -99,6 +110,7 @@
 import { nextTick } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import AppHeader from "./components/AppHeader.vue";
+import AdminLogsPanel from "./components/AdminLogsPanel.vue";
 import AdminPanel from "./components/AdminPanel.vue";
 import AuthPanel from "./components/AuthPanel.vue";
 import ControlPanel from "./components/ControlPanel.vue";
@@ -106,7 +118,7 @@ import ImageDialogs from "./components/ImageDialogs.vue";
 import ResultPanel from "./components/ResultPanel.vue";
 
 const statusText = {
-  1: "已创建",
+  1: "排队中",
   2: "处理中",
   3: "已完成",
   4: "失败",
@@ -186,6 +198,7 @@ const aspectRatios = [
 
 export default {
   components: {
+    AdminLogsPanel,
     AdminPanel,
     AppHeader,
     AuthPanel,
@@ -235,6 +248,9 @@ export default {
       savedSchemes: [],
       adminLoading: false,
       adminDashboard: {},
+      adminQuery: { limit: 20, offset: 0 },
+      adminLogsLoading: false,
+      adminLogs: [],
       promptOptimizing: false,
       feedbackSubmitting: false,
       recommendationLoading: false,
@@ -551,15 +567,46 @@ export default {
       await this.loadAdminDashboard();
     },
 
-    async loadAdminDashboard() {
+    async openAdminLogs() {
+      if (!this.isAdmin) {
+        ElMessage.warning("只有 admin 用户可以访问管理后台");
+        return;
+      }
+      this.activeTab = "logs";
+      await this.loadAdminLogs();
+    },
+
+    async loadAdminDashboard(query = null) {
       if (!this.isAuthenticated || !this.isAdmin) return;
+      if (query) this.adminQuery = { ...this.adminQuery, ...query };
       this.adminLoading = true;
       try {
-        this.adminDashboard = await this.request("/api/v1/admin/dashboard");
+        const params = new URLSearchParams();
+        Object.entries(this.adminQuery).forEach(([key, value]) => {
+          if (value !== null && value !== undefined && value !== "") params.set(key, String(value));
+        });
+        this.adminDashboard = await this.request(`/api/v1/admin/dashboard?${params.toString()}`);
       } catch (err) {
         ElMessage.error(err.message);
       } finally {
         this.adminLoading = false;
+      }
+    },
+
+    async loadAdminLogs(query = null) {
+      if (!this.isAuthenticated || !this.isAdmin) return;
+      this.adminLogsLoading = true;
+      try {
+        const params = new URLSearchParams();
+        const payload = { limit: 120, ...(query || {}) };
+        Object.entries(payload).forEach(([key, value]) => {
+          if (value !== null && value !== undefined && value !== "") params.set(key, String(value));
+        });
+        this.adminLogs = await this.request(`/api/v1/admin/logs?${params.toString()}`);
+      } catch (err) {
+        ElMessage.error(err.message);
+      } finally {
+        this.adminLogsLoading = false;
       }
     },
 

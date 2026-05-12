@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import mimetypes
@@ -7,13 +8,13 @@ import re
 import hashlib
 import hmac
 import secrets
-import sqlite3
+import time
 import uuid
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -35,6 +36,7 @@ from .models import (
     StyleTemplate,
     StyleTemplateRequest,
     StyleTemplateResponse,
+    SystemLog,
     SubmitResponse,
     TaskRecord,
     UserLoginRequest,
@@ -764,12 +766,129 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-store = TasksStore(settings.tasks_db_path)
+store = TasksStore(settings.database_url)
 client = NanoBananaClient(base_url=settings.nanobanana_base_url, api_key=settings.nanobanana_api_key)
 uploads_path = Path(settings.uploads_dir)
 uploads_path.mkdir(parents=True, exist_ok=True)
 frontend_path = Path(settings.frontend_dir)
 frontend_static_path = frontend_path / "dist" if (frontend_path / "dist").exists() else frontend_path
+
+
+def _redis_client():
+    if not settings.redis_url.strip():
+        return None
+    try:
+        import redis
+    except ImportError:
+        return None
+    try:
+        return redis.Redis.from_url(settings.redis_url, decode_responses=True, socket_connect_timeout=1.0)
+    except Exception:
+        return None
+
+
+redis_client = _redis_client()
+GENERATION_QUEUE_KEY = "home_design:generation_queue"
+
+
+def _cache_get_json(key: str) -> object | None:
+    if not redis_client:
+        return None
+    try:
+        raw = redis_client.get(key)
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+
+def _cache_set_json(key: str, value: object, ttl: int) -> None:
+    if not redis_client:
+        return
+    try:
+        redis_client.setex(key, max(1, ttl), json.dumps(value, ensure_ascii=False, default=str))
+    except Exception:
+        pass
+
+
+def _cache_delete_prefix(prefix: str) -> None:
+    if not redis_client:
+        return
+    try:
+        for key in redis_client.scan_iter(f"{prefix}*"):
+            redis_client.delete(key)
+    except Exception:
+        pass
+
+
+def _cache_key(prefix: str, payload: object) -> str:
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return f"{prefix}:{hashlib.sha256(raw.encode('utf-8')).hexdigest()}"
+
+
+def _invalidate_data_cache() -> None:
+    _cache_delete_prefix("admin_dashboard:")
+    _cache_delete_prefix("recommendations:")
+
+
+def _client_ip(request: Request | None) -> str | None:
+    if request is None:
+        return None
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",", 1)[0].strip()
+    return request.client.host if request.client else None
+
+
+def _log_event(
+    action: str,
+    *,
+    level: str = "info",
+    user: UserProfile | None = None,
+    username: str | None = None,
+    target_type: str | None = None,
+    target_id: str | None = None,
+    message: str | None = None,
+    duration_ms: int | None = None,
+    request: Request | None = None,
+) -> None:
+    try:
+        store.add_system_log(
+            action=action,
+            level=level,
+            user_id=user.id if user else None,
+            username=user.username if user else username,
+            target_type=target_type,
+            target_id=target_id,
+            message=message,
+            duration_ms=duration_ms,
+            request_path=str(request.url.path) if request else None,
+            ip_address=_client_ip(request),
+        )
+    except Exception:
+        pass
+
+
+def _queue_generation_task(task_id: str) -> bool:
+    if not redis_client or not settings.generation_queue_enabled:
+        return False
+    try:
+        redis_client.rpush(GENERATION_QUEUE_KEY, task_id)
+        return True
+    except Exception:
+        return False
+
+
+def _pop_generation_task() -> str | None:
+    if not redis_client:
+        return None
+    try:
+        item = redis_client.blpop(GENERATION_QUEUE_KEY, timeout=max(1, settings.generation_queue_poll_timeout_s))
+    except Exception:
+        return None
+    if not item:
+        return None
+    _, task_id = item
+    return str(task_id)
 
 
 def _hash_password(password: str, salt: str | None = None) -> str:
@@ -787,6 +906,33 @@ def _verify_password(password: str, stored_hash: str) -> bool:
         return False
     actual = _hash_password(password, salt).split("$", 2)[2]
     return hmac.compare_digest(actual, expected)
+
+
+@app.middleware("http")
+async def system_log_middleware(request: Request, call_next):
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        _log_event(
+            "api_exception",
+            level="error",
+            message=f"{exc.__class__.__name__}: {exc}",
+            duration_ms=duration_ms,
+            request=request,
+        )
+        raise
+    if response.status_code >= 500:
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        _log_event(
+            "api_error_response",
+            level="error",
+            message=f"HTTP {response.status_code}",
+            duration_ms=duration_ms,
+            request=request,
+        )
+    return response
 
 
 def _extract_bearer_token(authorization: str | None) -> str | None:
@@ -827,29 +973,36 @@ async def healthz() -> dict[str, str]:
 
 
 @app.post("/api/v1/auth/register", response_model=AuthResponse)
-async def register(req: UserRegisterRequest) -> AuthResponse:
+async def register(req: UserRegisterRequest, request: Request) -> AuthResponse:
     username = req.username.strip()
     if store.username_exists(username):
+        _log_event("auth_register_failed", level="warning", username=username, message="duplicate username", request=request)
         raise HTTPException(status_code=409, detail="用户名已存在")
     try:
         user = store.create_user(username, _hash_password(req.password))
-    except sqlite3.IntegrityError as exc:
+    except ValueError as exc:
+        _log_event("auth_register_failed", level="warning", username=username, message="duplicate username", request=request)
         raise HTTPException(status_code=409, detail="用户名已存在") from exc
+    _invalidate_data_cache()
     token = secrets.token_urlsafe(32)
     store.create_session(token, user.id)
+    _log_event("auth_register", user=user, message="user registered", request=request)
     return AuthResponse(token=token, user=user)
 
 
 @app.post("/api/v1/auth/login", response_model=AuthResponse)
-async def login(req: UserLoginRequest) -> AuthResponse:
+async def login(req: UserLoginRequest, request: Request) -> AuthResponse:
     found = store.get_user_by_username(req.username.strip())
     if not found:
+        _log_event("auth_login_failed", level="warning", username=req.username.strip(), message="username not found", request=request)
         raise HTTPException(status_code=401, detail="用户名或密码错误")
     user, password_hash = found
     if not _verify_password(req.password, password_hash):
+        _log_event("auth_login_failed", level="warning", user=user, message="invalid password", request=request)
         raise HTTPException(status_code=401, detail="用户名或密码错误")
     token = secrets.token_urlsafe(32)
     store.create_session(token, user.id)
+    _log_event("auth_login", user=user, message="user logged in", request=request)
     return AuthResponse(token=token, user=user)
 
 
@@ -859,10 +1012,12 @@ async def me(user: UserProfile = Depends(current_user)) -> UserProfile:
 
 
 @app.post("/api/v1/auth/logout")
-async def logout(authorization: str | None = Header(default=None)) -> dict[str, bool]:
+async def logout(request: Request, authorization: str | None = Header(default=None)) -> dict[str, bool]:
     token = _extract_bearer_token(authorization)
+    user = store.get_user_by_token(token) if token else None
     if token:
         store.delete_session(token)
+    _log_event("auth_logout", user=user, message="user logged out", request=request)
     return {"ok": True}
 
 
@@ -882,12 +1037,73 @@ async def design_presets() -> dict[str, list[str]]:
 
 
 @app.get("/api/v1/admin/dashboard")
-async def admin_dashboard(_user: UserProfile = Depends(require_admin)) -> dict[str, object]:
-    return store.admin_dashboard(limit=160)
+async def admin_dashboard(
+    limit: int = Query(default=20, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    start_at: int | None = Query(default=None),
+    end_at: int | None = Query(default=None),
+    username: str | None = Query(default=None),
+    room_type: str | None = Query(default=None),
+    design_style: str | None = Query(default=None),
+    color_preference: str | None = Query(default=None),
+    status: int | None = Query(default=None),
+    _user: UserProfile = Depends(require_admin),
+) -> dict[str, object]:
+    key = _cache_key(
+        "admin_dashboard",
+        {
+            "limit": limit,
+            "offset": offset,
+            "start_at": start_at,
+            "end_at": end_at,
+            "username": username,
+            "room_type": room_type,
+            "design_style": design_style,
+            "color_preference": color_preference,
+            "status": status,
+        },
+    )
+    cached = _cache_get_json(key)
+    if isinstance(cached, dict):
+        return cached
+    data = store.admin_dashboard(
+        limit=limit,
+        offset=offset,
+        start_at=start_at,
+        end_at=end_at,
+        username=username,
+        room_type=room_type,
+        design_style=design_style,
+        color_preference=color_preference,
+        status=status,
+    )
+    _cache_set_json(key, data, settings.cache_ttl_s)
+    return data
+
+
+@app.get("/api/v1/admin/logs", response_model=list[SystemLog])
+async def admin_system_logs(
+    limit: int = Query(default=100, ge=1, le=300),
+    level: str | None = Query(default=None),
+    action: str | None = Query(default=None),
+    username: str | None = Query(default=None),
+    start_at: int | None = Query(default=None),
+    end_at: int | None = Query(default=None),
+    _user: UserProfile = Depends(require_admin),
+) -> list[SystemLog]:
+    return store.list_system_logs(
+        limit=limit,
+        level=level,
+        action=action,
+        username=username,
+        start_at=start_at,
+        end_at=end_at,
+    )
 
 
 @app.post("/api/v1/prompts/optimize", response_model=PromptOptimizeResponse)
-async def optimize_prompt(req: PromptOptimizeRequest, _user: UserProfile = Depends(current_user)) -> PromptOptimizeResponse:
+async def optimize_prompt(req: PromptOptimizeRequest, request: Request, user: UserProfile = Depends(current_user)) -> PromptOptimizeResponse:
+    started = time.perf_counter()
     system_text = (
         "你是家装设计图生成系统的提示词优化助手。"
         "请将用户的原始需求改写为适合图生图家装渲染模型使用的中文提示词，输出必须稳定、具体、可执行。"
@@ -915,6 +1131,7 @@ async def optimize_prompt(req: PromptOptimizeRequest, _user: UserProfile = Depen
         max_tokens=500,
     )
     optimized = optimized.strip().strip("`").strip()
+    _log_event("prompt_optimize", user=user, message="prompt optimized", duration_ms=int((time.perf_counter() - started) * 1000), request=request)
     return PromptOptimizeResponse(prompt=optimized[:500], summary="已根据当前空间、风格和比例优化提示词。")
 
 
@@ -950,35 +1167,99 @@ async def upload_asset(
     elif settings.public_base_url.startswith("http://localhost") or settings.public_base_url.startswith("http://127.0.0.1"):
         warning = "For real NanoBanana calls, set PUBLIC_BASE_URL to a public tunnel URL so the API can fetch uploaded images."
 
+    _log_event("asset_upload", target_type="asset", target_id=safe_name, message=f"{len(body)} bytes", request=request)
     return AssetUploadResponse(filename=safe_name, url=public_url, local_url=local_url, warning=warning)
 
 
 @app.post("/api/v1/design/submit", response_model=SubmitResponse)
-async def submit(req: GenerateRequest, user: UserProfile | None = Depends(optional_user)) -> SubmitResponse:
+async def submit(req: GenerateRequest, request: Request, user: UserProfile | None = Depends(optional_user)) -> SubmitResponse:
+    started = time.perf_counter()
     provider = _active_provider()
     final_prompt = build_home_design_prompt(req)
 
+    if provider == "nanobanana" and not _has_nanobanana_key():
+        raise HTTPException(status_code=400, detail="NANOBANANA_API_KEY is required when AI_PROVIDER=nanobanana")
+
+    callback_url = req.callback_url or _default_callback_url()
+    if provider == "nanobanana" and not callback_url.startswith("http"):
+        raise HTTPException(status_code=400, detail="callback_url must be an http(s) URL")
+
+    task_id = f"local-{uuid.uuid4().hex}"
+    raw = {
+        "provider": provider,
+        "queue": {"status": "queued"},
+        "request": req.model_dump(),
+        "prompt": final_prompt,
+        "callback_url": callback_url,
+    }
+    store.upsert(
+        task_id,
+        NanoBananaTaskStatus.created,
+        raw=raw,
+        user_id=user.id if user else None,
+    )
+    store.save_design_request(
+        task_id,
+        req,
+        status=NanoBananaTaskStatus.created,
+        user_id=user.id if user else None,
+    )
+    queued = _queue_generation_task(task_id)
+    if not queued:
+        asyncio.create_task(_process_queued_generation(task_id))
+    _invalidate_data_cache()
+    _log_event(
+        "design_submit_queued",
+        user=user,
+        target_type="task",
+        target_id=task_id,
+        message=f"provider={provider}, queued={queued}",
+        duration_ms=int((time.perf_counter() - started) * 1000),
+        request=request,
+    )
+    return SubmitResponse(task_id=task_id)
+
+
+async def _process_queued_generation(task_id: str) -> None:
+    started = time.perf_counter()
+    rec = store.get(task_id)
+    if not rec or rec.status in {NanoBananaTaskStatus.success, NanoBananaTaskStatus.failed}:
+        return
+    raw = rec.raw or {}
+    if raw.get("remote_task_id"):
+        return
+    provider = str(raw.get("provider") or _active_provider())
+    request_data = raw.get("request") if isinstance(raw.get("request"), dict) else {}
+    try:
+        req = GenerateRequest(**request_data)
+    except Exception as exc:
+        _mark_queued_generation_failed(task_id, f"Queued request is invalid: {exc}", raw)
+        return
+    final_prompt = str(raw.get("prompt") or build_home_design_prompt(req))
+
+    store.update_result(
+        task_id,
+        status=NanoBananaTaskStatus.processing,
+        result_image_url=None,
+        error_message=None,
+        raw={**raw, "queue": {"status": "processing"}},
+    )
+    store.update_design_result(
+        task_id,
+        status=NanoBananaTaskStatus.processing,
+        result_image_url=None,
+        error_message=None,
+    )
+    _invalidate_data_cache()
+
     if provider == "mock":
-        task_id = make_demo_task_id()
         result_image_url = make_demo_result(req)
-        store.upsert(
-            task_id,
-            NanoBananaTaskStatus.processing,
-            raw={"provider": "mock", "request": req.model_dump(), "prompt": final_prompt},
-            user_id=user.id if user else None,
-        )
-        store.save_design_request(
-            task_id,
-            req,
-            status=NanoBananaTaskStatus.processing,
-            user_id=user.id if user else None,
-        )
         store.update_result(
             task_id,
             status=NanoBananaTaskStatus.success,
             result_image_url=result_image_url,
             error_message=None,
-            raw={"provider": "mock", "request": req.model_dump(), "prompt": final_prompt},
+            raw={**raw, "queue": {"status": "finished"}},
         )
         store.update_design_result(
             task_id,
@@ -986,15 +1267,70 @@ async def submit(req: GenerateRequest, user: UserProfile | None = Depends(option
             result_image_url=result_image_url,
             error_message=None,
         )
-        return SubmitResponse(task_id=task_id)
+        _invalidate_data_cache()
+        _log_event(
+            "design_generate_success",
+            username=(rec.raw or {}).get("username") if isinstance((rec.raw or {}).get("username"), str) else None,
+            target_type="task",
+            target_id=task_id,
+            message="mock provider finished",
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+        return
 
-    if not _has_nanobanana_key():
-        raise HTTPException(status_code=400, detail="NANOBANANA_API_KEY is required when AI_PROVIDER=nanobanana")
+    try:
+        remote_task_id, submit_resp = await _submit_nanobanana_generation(
+            req,
+            final_prompt,
+            str(raw.get("callback_url") or _default_callback_url()),
+        )
+    except Exception as exc:
+        _mark_queued_generation_failed(task_id, f"NanoBanana request failed: {exc}", raw)
+        return
 
-    callback_url = req.callback_url or _default_callback_url()
-    if not callback_url.startswith("http"):
-        raise HTTPException(status_code=400, detail="callback_url must be an http(s) URL")
+    store.attach_remote_task(
+        task_id,
+        remote_task_id,
+        raw={
+            **raw,
+            "queue": {"status": "submitted"},
+            "remote_task_id": remote_task_id,
+            "submit": submit_resp,
+        },
+    )
+    _invalidate_data_cache()
+    _log_event(
+        "design_remote_submitted",
+        target_type="task",
+        target_id=task_id,
+        message=f"remote_task_id={remote_task_id}",
+        duration_ms=int((time.perf_counter() - started) * 1000),
+    )
 
+
+def _mark_queued_generation_failed(task_id: str, message: str, raw: dict[str, object]) -> None:
+    store.update_result(
+        task_id,
+        status=NanoBananaTaskStatus.failed,
+        result_image_url=None,
+        error_message=message,
+        raw={**raw, "queue": {"status": "failed", "error": message}},
+    )
+    store.update_design_result(
+        task_id,
+        status=NanoBananaTaskStatus.failed,
+        result_image_url=None,
+        error_message=message,
+    )
+    _invalidate_data_cache()
+    _log_event("design_generate_failed", level="error", target_type="task", target_id=task_id, message=message)
+
+
+async def _submit_nanobanana_generation(
+    req: GenerateRequest,
+    final_prompt: str,
+    callback_url: str,
+) -> tuple[str, dict[str, object]]:
     image_urls = list(req.image_urls)
     if req.mask_url:
         image_urls.append(req.mask_url)
@@ -1025,10 +1361,7 @@ async def submit(req: GenerateRequest, user: UserProfile | None = Depends(option
         if image_urls:
             payload["imageUrls"] = image_urls
 
-        try:
-            resp = await client.generate_or_edit(payload)
-        except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail=f"NanoBanana request failed: {exc}") from exc
+        resp = await client.generate_or_edit(payload)
     else:
         payload = {
             "prompt": final_prompt,
@@ -1045,37 +1378,50 @@ async def submit(req: GenerateRequest, user: UserProfile | None = Depends(option
         if image_urls:
             payload["imageUrls"] = image_urls
 
-        try:
-            resp = await client.generate_pro(payload)
-        except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail=f"NanoBanana request failed: {exc}") from exc
+        resp = await client.generate_pro(payload)
 
     task_id = _extract_task_id(resp)
     if not task_id:
-        raise HTTPException(status_code=502, detail=_nanobanana_error_detail(resp))
+        raise RuntimeError(_nanobanana_error_detail(resp))
+    return task_id, resp
 
-    store.upsert(
-        task_id,
-        NanoBananaTaskStatus.created,
-        raw={"provider": "nanobanana", "submit": resp, "request": req.model_dump(), "prompt": final_prompt},
-        user_id=user.id if user else None,
-    )
-    store.save_design_request(
-        task_id,
-        req,
-        status=NanoBananaTaskStatus.created,
-        user_id=user.id if user else None,
-    )
-    return SubmitResponse(task_id=task_id)
+
+async def _generation_queue_worker() -> None:
+    while True:
+        task_id = await run_in_threadpool(_pop_generation_task)
+        if not task_id:
+            continue
+        try:
+            await _process_queued_generation(task_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            continue
+
+
+@app.on_event("startup")
+async def start_generation_queue_worker() -> None:
+    if redis_client and settings.generation_queue_enabled:
+        app.state.generation_queue_worker = asyncio.create_task(_generation_queue_worker())
+
+
+@app.on_event("shutdown")
+async def stop_generation_queue_worker() -> None:
+    worker = getattr(app.state, "generation_queue_worker", None)
+    if worker:
+        worker.cancel()
 
 
 @app.get("/api/v1/design/records", response_model=list[DesignRecord])
 async def list_design_records(
+    response: Response,
     limit: int = 50,
+    offset: int = 0,
     design_style: str | None = None,
     user: UserProfile = Depends(current_user),
 ) -> list[DesignRecord]:
-    return store.list_design_records(limit=limit, design_style=design_style, user_id=user.id)
+    response.headers["X-Total-Count"] = str(store.count_design_records(design_style=design_style, user_id=user.id))
+    return store.list_design_records(limit=limit, offset=offset, design_style=design_style, user_id=user.id)
 
 
 @app.get("/api/v1/design/records/{task_id}", response_model=DesignRecord)
@@ -1095,6 +1441,8 @@ async def save_design_feedback(
     rec = store.update_design_feedback(task_id, feedback, user_id=user.id)
     if not rec:
         raise HTTPException(status_code=404, detail="design record not found")
+    _invalidate_data_cache()
+    _log_event("design_feedback_saved", user=user, target_type="task", target_id=task_id, message="feedback saved")
     return rec
 
 
@@ -1103,14 +1451,18 @@ async def delete_design_record(task_id: str, user: UserProfile = Depends(current
     deleted = store.delete_design_record(task_id, user_id=user.id)
     if not deleted:
         raise HTTPException(status_code=404, detail="design record not found")
+    _invalidate_data_cache()
+    _log_event("design_record_deleted", user=user, target_type="task", target_id=task_id, message="user deleted design record")
     return {"deleted": True}
 
 
 @app.delete("/api/v1/admin/design/records/{task_id}")
-async def admin_delete_design_record(task_id: str, _user: UserProfile = Depends(require_admin)) -> dict[str, bool]:
+async def admin_delete_design_record(task_id: str, user: UserProfile = Depends(require_admin)) -> dict[str, bool]:
     deleted = store.admin_delete_design_record(task_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="design record not found")
+    _invalidate_data_cache()
+    _log_event("admin_design_record_deleted", user=user, target_type="task", target_id=task_id, message="admin deleted design record")
     return {"deleted": True}
 
 
@@ -1121,7 +1473,10 @@ async def list_favorites(limit: int = 50, user: UserProfile = Depends(current_us
 
 @app.post("/api/v1/favorites", response_model=FavoriteScheme)
 async def save_favorite(scheme: FavoriteSchemeCreate, user: UserProfile = Depends(current_user)) -> FavoriteScheme:
-    return store.save_favorite_scheme(user.id, scheme)
+    saved = store.save_favorite_scheme(user.id, scheme)
+    _invalidate_data_cache()
+    _log_event("favorite_saved", user=user, target_type="favorite", target_id=str(saved.id), message=saved.task_id or saved.title)
+    return saved
 
 
 @app.delete("/api/v1/favorites/{favorite_id}")
@@ -1129,6 +1484,8 @@ async def delete_favorite(favorite_id: int, user: UserProfile = Depends(current_
     deleted = store.delete_favorite_scheme(user.id, favorite_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="favorite not found")
+    _invalidate_data_cache()
+    _log_event("favorite_deleted", user=user, target_type="favorite", target_id=str(favorite_id), message="favorite deleted")
     return {"deleted": True}
 
 
@@ -1137,10 +1494,17 @@ async def recommend_style_templates(
     req: StyleTemplateRequest,
     _user: UserProfile = Depends(current_user),
 ) -> StyleTemplateResponse:
+    key = _cache_key("recommendations", req.model_dump())
+    cached = _cache_get_json(key)
+    if isinstance(cached, dict):
+        return StyleTemplateResponse(**cached)
     vision_result = await _vision_style_templates(req)
     if vision_result:
+        _cache_set_json(key, vision_result.model_dump(), settings.recommendation_cache_ttl_s)
         return vision_result
-    return _default_style_templates_response("智能推荐暂不可用，已保留初始4个模板。")
+    fallback = _default_style_templates_response("智能推荐暂不可用，已保留初始4个模板。")
+    _cache_set_json(key, fallback.model_dump(), settings.cache_ttl_s)
+    return fallback
 
 
 @app.get("/api/v1/tasks", response_model=list[TaskRecord])
@@ -1165,8 +1529,12 @@ async def refresh_task(task_id: str) -> TaskRecord:
     if task_id.startswith("demo-"):
         return rec
 
+    remote_task_id = str((rec.raw or {}).get("remote_task_id") or "")
+    if task_id.startswith("local-") and not remote_task_id:
+        return rec
+
     try:
-        details = await client.get_task_details(task_id)
+        details = await client.get_task_details(remote_task_id or task_id)
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"NanoBanana refresh failed: {exc}") from exc
     data = details.get("data") if isinstance(details, dict) else None
@@ -1175,8 +1543,9 @@ async def refresh_task(task_id: str) -> TaskRecord:
 
     status, result_url, error_msg = _parse_record_info(data, rec)
 
-    store.update_result(task_id, status=status, result_image_url=result_url, error_message=error_msg, raw={"record": details})
+    store.update_result(task_id, status=status, result_image_url=result_url, error_message=error_msg, raw={**(rec.raw or {}), "record": details})
     store.update_design_result(task_id, status=status, result_image_url=result_url, error_message=error_msg)
+    _invalidate_data_cache()
     return store.get(task_id)  # type: ignore[return-value]
 
 
@@ -1204,21 +1573,33 @@ async def nanobanana_callback(cb: dict[str, object]) -> dict[str, str]:
     result_image_url = cb.get("resultImageUrl") or info.get("resultImageUrl")
     error_message = cb.get("errorMsg") or cb.get("msg")
 
-    if not store.get(str(task_id)):
-        store.upsert(str(task_id), NanoBananaTaskStatus.processing, raw={"callback_first": cb})
+    remote_task_id = str(task_id)
+    local_rec = store.get_by_remote_task_id(remote_task_id)
+    target_task_id = local_rec.task_id if local_rec else remote_task_id
+
+    if not store.get(target_task_id):
+        store.upsert(target_task_id, NanoBananaTaskStatus.processing, raw={"callback_first": cb})
 
     store.update_result(
-        str(task_id),
+        target_task_id,
         status=status,
         result_image_url=str(result_image_url) if result_image_url else None,
         error_message=str(error_message) if error_message and status == NanoBananaTaskStatus.failed else None,
-        raw={"callback": cb},
+        raw={**((local_rec.raw if local_rec else {}) or {}), "remote_task_id": remote_task_id, "callback": cb},
     )
     store.update_design_result(
-        str(task_id),
+        target_task_id,
         status=status,
         result_image_url=str(result_image_url) if result_image_url else None,
         error_message=str(error_message) if error_message and status == NanoBananaTaskStatus.failed else None,
+    )
+    _invalidate_data_cache()
+    _log_event(
+        "nanobanana_callback",
+        level="error" if status == NanoBananaTaskStatus.failed else "info",
+        target_type="task",
+        target_id=target_task_id,
+        message=f"remote_task_id={remote_task_id}, status={int(status)}",
     )
     return {"ok": "true"}
 

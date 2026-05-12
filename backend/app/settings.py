@@ -20,10 +20,16 @@ class Settings(BaseSettings):
     nanobanana_base_url: str = "https://api.nanobananaapi.ai/api/v1/nanobanana"
 
     public_base_url: str = "http://localhost:8000"
-    tasks_db_path: str = "./tasks.db"
+    database_url: str = ""
     uploads_dir: str = "./uploads"
     frontend_dir: str = "../frontend"
     max_upload_mb: int = 12
+
+    redis_url: str = ""
+    cache_ttl_s: int = 120
+    recommendation_cache_ttl_s: int = 600
+    generation_queue_enabled: bool = True
+    generation_queue_poll_timeout_s: int = 2
 
     remote_upload_enabled: bool = False
     remote_upload_host: str = ""

@@ -5,7 +5,19 @@
         <span class="eyebrow">管理后台</span>
         <h2>平台数据概览</h2>
       </div>
-      <el-button size="small" :loading="loading" @click="$emit('refresh-admin')">刷新数据</el-button>
+      <div class="admin-toolbar-actions">
+        <el-date-picker
+          v-model="dateRange"
+          type="daterange"
+          range-separator="至"
+          start-placeholder="开始日期"
+          end-placeholder="结束日期"
+          value-format="x"
+          size="small"
+          @change="resetPageAndRefresh"
+        ></el-date-picker>
+        <el-button size="small" :loading="loading" @click="refreshDashboard">刷新数据</el-button>
+      </div>
     </div>
 
     <div class="admin-kpis">
@@ -82,19 +94,19 @@
           <span>{{ filteredRecords.length }} / {{ records.length }} 条</span>
         </div>
         <div class="admin-filters">
-          <el-select v-model="filters.username" clearable filterable placeholder="用户">
+          <el-select v-model="filters.username" clearable filterable placeholder="用户" @change="resetPageAndRefresh">
             <el-option v-for="item in options.username" :key="item" :label="item" :value="item"></el-option>
           </el-select>
-          <el-select v-model="filters.room_type" clearable filterable placeholder="空间">
+          <el-select v-model="filters.room_type" clearable filterable placeholder="空间" @change="resetPageAndRefresh">
             <el-option v-for="item in options.room_type" :key="item" :label="item" :value="item"></el-option>
           </el-select>
-          <el-select v-model="filters.design_style" clearable filterable placeholder="风格">
+          <el-select v-model="filters.design_style" clearable filterable placeholder="风格" @change="resetPageAndRefresh">
             <el-option v-for="item in options.design_style" :key="item" :label="item" :value="item"></el-option>
           </el-select>
-          <el-select v-model="filters.color_preference" clearable filterable placeholder="色彩">
+          <el-select v-model="filters.color_preference" clearable filterable placeholder="色彩" @change="resetPageAndRefresh">
             <el-option v-for="item in options.color_preference" :key="item" :label="item" :value="item"></el-option>
           </el-select>
-          <el-select v-model="filters.status" clearable placeholder="状态">
+          <el-select v-model="filters.status" clearable placeholder="状态" @change="resetPageAndRefresh">
             <el-option v-for="item in options.status" :key="item" :label="statusLabel(item)" :value="item"></el-option>
           </el-select>
           <el-button plain @click="resetFilters">重置</el-button>
@@ -120,6 +132,18 @@
             </template>
           </el-table-column>
         </el-table>
+        <div class="admin-pagination">
+          <el-pagination
+            v-model:current-page="page"
+            v-model:page-size="pageSize"
+            :page-sizes="[10, 20, 50, 100]"
+            :total="recordsTotal"
+            layout="total, sizes, prev, pager, next"
+            small
+            @current-change="refreshDashboard"
+            @size-change="resetPageAndRefresh"
+          ></el-pagination>
+        </div>
       </section>
     </div>
 
@@ -200,6 +224,9 @@ export default {
         status: "",
       },
       activeStatTab: "daily",
+      dateRange: [],
+      page: 1,
+      pageSize: 20,
       detailVisible: false,
       activeRecord: null,
     };
@@ -213,6 +240,9 @@ export default {
     },
     records() {
       return this.dashboard.records || [];
+    },
+    recordsTotal() {
+      return Number(this.dashboard.recordsTotal || this.records.length || 0);
     },
     dailyStats() {
       return this.dashboard.dailyStats || [];
@@ -233,18 +263,17 @@ export default {
       return this.dashboard.statusStats || [];
     },
     options() {
+      const serverOptions = this.dashboard.filterOptions || {};
       return {
-        username: this.uniqueOptions("username"),
-        room_type: this.uniqueOptions("room_type"),
-        design_style: this.uniqueOptions("design_style"),
-        color_preference: this.uniqueOptions("color_preference"),
-        status: this.uniqueOptions("status"),
+        username: serverOptions.username || this.uniqueOptions("username"),
+        room_type: serverOptions.room_type || this.uniqueOptions("room_type"),
+        design_style: serverOptions.design_style || this.uniqueOptions("design_style"),
+        color_preference: serverOptions.color_preference || this.uniqueOptions("color_preference"),
+        status: serverOptions.status || this.uniqueOptions("status"),
       };
     },
     filteredRecords() {
-      return this.records.filter((record) =>
-        Object.entries(this.filters).every(([key, value]) => !value || String(record[key] ?? "") === String(value)),
-      );
+      return this.records;
     },
     statTabs() {
       return [
@@ -291,6 +320,27 @@ export default {
         color_preference: "",
         status: "",
       };
+      this.resetPageAndRefresh();
+    },
+    queryPayload() {
+      const [start, end] = this.dateRange || [];
+      const payload = {
+        limit: this.pageSize,
+        offset: (this.page - 1) * this.pageSize,
+      };
+      if (start) payload.start_at = Math.floor(Number(start) / 1000);
+      if (end) payload.end_at = Math.floor(Number(end) / 1000) + 86399;
+      Object.entries(this.filters).forEach(([key, value]) => {
+        if (value !== null && value !== undefined && value !== "") payload[key] = value;
+      });
+      return payload;
+    },
+    refreshDashboard() {
+      this.$emit("refresh-admin", this.queryPayload());
+    },
+    resetPageAndRefresh() {
+      this.page = 1;
+      this.refreshDashboard();
     },
     openRecord(record) {
       this.activeRecord = record;

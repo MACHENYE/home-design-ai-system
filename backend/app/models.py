@@ -146,6 +146,21 @@ class FavoriteScheme(BaseModel):
     created_at: int | None = None
 
 
+class SystemLog(BaseModel):
+    id: int
+    user_id: int | None = None
+    username: str | None = None
+    level: str = "info"
+    action: str
+    target_type: str | None = None
+    target_id: str | None = None
+    message: str | None = None
+    duration_ms: int | None = None
+    request_path: str | None = None
+    ip_address: str | None = None
+    created_at: int | None = None
+
+
 class AssetUploadResponse(BaseModel):
     filename: str
     url: str

@@ -243,6 +243,12 @@ body {
   margin-bottom: 14px;
 }
 
+.admin-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .admin-kpis,
 .admin-tables {
   display: grid;
@@ -326,6 +332,12 @@ body {
   grid-template-columns: repeat(5, minmax(110px, 1fr)) auto;
   gap: 8px;
   margin: 12px 0;
+}
+
+.admin-pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
 }
 
 .admin-detail {
@@ -1086,7 +1098,7 @@ body {
 
   .side-nav {
     position: static;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .side-nav button {
