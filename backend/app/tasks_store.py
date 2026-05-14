@@ -234,6 +234,82 @@ class TasksStore:
                 )
                 """
             )
+            self._create_table(
+                conn,
+                """
+                CREATE TABLE IF NOT EXISTS design_assets (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  task_id VARCHAR(191) NULL,
+                  user_id INTEGER NULL,
+                  asset_type VARCHAR(40) NOT NULL,
+                  url TEXT NOT NULL,
+                  source VARCHAR(40) NOT NULL DEFAULT 'upload',
+                  mime_type VARCHAR(80) NULL,
+                  created_at INTEGER NOT NULL,
+                  FOREIGN KEY(task_id) REFERENCES tasks(task_id) ON DELETE CASCADE,
+                  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL
+                )
+                """
+            )
+            self._create_table(
+                conn,
+                """
+                CREATE TABLE IF NOT EXISTS design_iterations (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  task_id VARCHAR(191) NOT NULL,
+                  iteration_no INTEGER NOT NULL,
+                  room_type VARCHAR(80) NULL,
+                  design_style VARCHAR(80) NULL,
+                  mode VARCHAR(40) NOT NULL,
+                  provider VARCHAR(40) NOT NULL,
+                  prompt_snapshot TEXT NOT NULL,
+                  status INTEGER NOT NULL,
+                  score DECIMAL(5,2) NULL,
+                  created_at INTEGER NOT NULL,
+                  updated_at INTEGER NOT NULL,
+                  UNIQUE(task_id, iteration_no),
+                  FOREIGN KEY(task_id) REFERENCES tasks(task_id) ON DELETE CASCADE
+                )
+                """
+            )
+            self._create_table(
+                conn,
+                """
+                CREATE TABLE IF NOT EXISTS generation_metrics (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  task_id VARCHAR(191) NOT NULL UNIQUE,
+                  provider VARCHAR(40) NOT NULL,
+                  remote_task_id VARCHAR(191) NULL,
+                  queued_at INTEGER NULL,
+                  started_at INTEGER NULL,
+                  finished_at INTEGER NULL,
+                  duration_ms INTEGER NULL,
+                  image_count INTEGER NOT NULL DEFAULT 1,
+                  result_format VARCHAR(20) NULL,
+                  error_code VARCHAR(80) NULL,
+                  created_at INTEGER NOT NULL,
+                  updated_at INTEGER NOT NULL,
+                  FOREIGN KEY(task_id) REFERENCES tasks(task_id) ON DELETE CASCADE
+                )
+                """
+            )
+            self._create_table(
+                conn,
+                """
+                CREATE TABLE IF NOT EXISTS style_knowledge_base (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  category VARCHAR(80) NOT NULL,
+                  name VARCHAR(120) NOT NULL,
+                  color_palette VARCHAR(191) NULL,
+                  materials VARCHAR(191) NULL,
+                  description TEXT NULL,
+                  prompt_hint TEXT NULL,
+                  created_at INTEGER NOT NULL,
+                  updated_at INTEGER NOT NULL,
+                  UNIQUE(category, name)
+                )
+                """
+            )
             self._ensure_column(conn, "tasks", "user_id", "INTEGER NULL")
             self._ensure_column(conn, "tasks", "remote_task_id", "VARCHAR(191) NULL")
             self._ensure_column(conn, "design_records", "user_id", "INTEGER NULL")
@@ -247,6 +323,9 @@ class TasksStore:
             self._ensure_column(conn, "system_logs", "duration_ms", "INTEGER NULL")
             self._ensure_column(conn, "system_logs", "request_path", "TEXT NULL")
             self._ensure_column(conn, "system_logs", "ip_address", "TEXT NULL")
+            self._ensure_column(conn, "design_iterations", "room_type", "VARCHAR(80) NULL")
+            self._ensure_column(conn, "design_iterations", "design_style", "VARCHAR(80) NULL")
+            self._remove_project_room_tables(conn)
             self._normalize_mysql_schema(conn)
             if not self._mysql:
                 conn.execute("DROP INDEX IF EXISTS idx_users_username_lower")
@@ -254,6 +333,189 @@ class TasksStore:
             conn.execute("UPDATE users SET role='admin' WHERE username='admin'")
             conn.commit()
         self._backfill_design_records()
+        self._seed_analytics_tables()
+
+    def _seed_analytics_tables(self) -> None:
+        """Populate thesis/demo analytics tables from existing design records.
+
+        These tables make the data model closer to a real design-product domain:
+        generation iteration -> assets/metrics -> style knowledge. The operation is
+        idempotent so it is safe to run on each backend startup.
+        """
+        now = int(time.time())
+        styles = [
+            ("风格", "现代简约", "暖白、原木、黑白灰", "原木、微水泥、金属线条", "强调干净线条、功能收纳和通透采光。", "减少装饰噪声，保留空间边界，突出自然光与克制材质。"),
+            ("风格", "新中式", "米色、胡桃木、留白", "原木、格栅、布艺", "融合东方秩序感与现代居住舒适度。", "保留对称关系，使用木质格栅、温润墙面和雅致软装。"),
+            ("风格", "北欧", "暖白、浅木色、低饱和色", "原木、布艺、藤编", "强调自然、轻盈和家庭友好。", "使用柔和自然光、浅色木纹和简洁家具比例。"),
+            ("风格", "侘寂风", "深灰、米灰、低饱和莫兰迪", "微水泥、亚麻、陶土", "强调材质肌理、安静氛围和克制留白。", "突出墙面肌理与自然漫射光，避免过度装饰。"),
+            ("风格", "奶油风", "奶油色、浅咖、暖白", "布艺、木饰面、柔光灯带", "适合柔和温暖、明亮舒适的居住场景。", "加入圆角家具、柔和墙面和低对比暖光。"),
+            ("风格", "中古风", "米色、胡桃木、复古棕", "胡桃木、藤编、皮革", "强调复古家具尺度和温润层次。", "使用胡桃木家具、复古灯具和沉稳材质对比。"),
+            ("空间", "客厅", "暖白、米色、局部强调色", "布艺、原木、石材", "家庭会客与日常活动中心。", "优先保证动线、采光、电视墙和收纳关系。"),
+            ("空间", "卧室", "低饱和、暖白、浅木色", "布艺、原木、软包", "强调休息氛围与舒适尺度。", "减少强对比，强调床头、灯光与收纳整合。"),
+            ("空间", "书房", "深灰、木色、低饱和色", "微水泥、原木、金属", "强调专注、安静和低干扰。", "控制视觉噪声，突出书桌、书架和局部照明。"),
+            ("材料", "原木", "暖木色、浅木色、胡桃木", "木饰面、木地板、格栅", "增强自然感和居住温度。", "表现清晰木纹，避免塑料感和比例失真。"),
+            ("材料", "微水泥", "灰、米灰、深灰", "连续墙地面、肌理涂料", "提升整体性和高级克制感。", "强调细腻颗粒、手工抹痕和柔和光影。"),
+            ("材料", "布艺", "米白、奶油、莫兰迪", "沙发、窗帘、软包", "提升柔和触感和生活气息。", "突出织物纹理，家具比例真实自然。"),
+        ]
+        with self._connect() as conn:
+            for item in styles:
+                conn.execute(
+                    """
+                    INSERT INTO style_knowledge_base (
+                      category, name, color_palette, materials, description,
+                      prompt_hint, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON DUPLICATE KEY UPDATE
+                      color_palette=VALUES(color_palette),
+                      materials=VALUES(materials),
+                      description=VALUES(description),
+                      prompt_hint=VALUES(prompt_hint),
+                      updated_at=VALUES(updated_at)
+                    """,
+                    (*item, now, now),
+                )
+
+            rows = conn.execute(
+                """
+                SELECT
+                  design_records.*,
+                  users.username,
+                  tasks.raw_json,
+                  tasks.remote_task_id
+                FROM design_records
+                LEFT JOIN users ON users.id=design_records.user_id
+                LEFT JOIN tasks ON tasks.task_id=design_records.task_id
+                ORDER BY design_records.created_at ASC
+                """
+            ).fetchall()
+            iteration_counts: dict[tuple[int | None, str], int] = {}
+
+            for row in rows:
+                user_id = row["user_id"]
+                room_type = row["room_type"] or "未设置空间"
+                design_style = row["design_style"] or "未设置风格"
+                iteration_key = (user_id, room_type)
+                iteration_counts[iteration_key] = iteration_counts.get(iteration_key, 0) + 1
+                iteration_no = iteration_counts[iteration_key]
+
+                raw = {}
+                if row.get("raw_json"):
+                    try:
+                        raw = json.loads(row["raw_json"])
+                    except json.JSONDecodeError:
+                        raw = {}
+                request_data = raw.get("request") if isinstance(raw, dict) else {}
+                provider = str(raw.get("provider") or ("nanobanana" if row.get("remote_task_id") else "unknown"))
+                mode = str(request_data.get("mode") or "basic") if isinstance(request_data, dict) else "basic"
+                output_format = str(request_data.get("output_format") or "png") if isinstance(request_data, dict) else "png"
+                score_values = [
+                    row.get("lighting_score"),
+                    row.get("style_match_score"),
+                    row.get("space_utilization_score"),
+                    row.get("satisfaction_score"),
+                ]
+                numeric_scores = [int(score) for score in score_values if score is not None]
+                avg_score = round(sum(numeric_scores) / len(numeric_scores), 2) if numeric_scores else None
+
+                conn.execute(
+                    """
+                    INSERT INTO design_iterations (
+                      task_id, iteration_no, room_type, design_style, mode, provider,
+                      prompt_snapshot, status, score, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON DUPLICATE KEY UPDATE
+                      room_type=VALUES(room_type),
+                      design_style=VALUES(design_style),
+                      mode=VALUES(mode),
+                      provider=VALUES(provider),
+                      prompt_snapshot=VALUES(prompt_snapshot),
+                      status=VALUES(status),
+                      score=VALUES(score),
+                      updated_at=VALUES(updated_at)
+                    """,
+                    (
+                        row["task_id"],
+                        iteration_no,
+                        room_type,
+                        design_style,
+                        mode,
+                        provider,
+                        row["prompt"],
+                        row["status"],
+                        avg_score,
+                        row["created_at"],
+                        row["updated_at"],
+                    ),
+                )
+
+                duration_ms = None
+                if row["created_at"] and row["updated_at"]:
+                    duration_ms = max(0, int(row["updated_at"] - row["created_at"]) * 1000)
+                conn.execute(
+                    """
+                    INSERT INTO generation_metrics (
+                      task_id, provider, remote_task_id, queued_at, started_at,
+                      finished_at, duration_ms, image_count, result_format,
+                      error_code, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON DUPLICATE KEY UPDATE
+                      provider=VALUES(provider),
+                      remote_task_id=VALUES(remote_task_id),
+                      finished_at=VALUES(finished_at),
+                      duration_ms=VALUES(duration_ms),
+                      result_format=VALUES(result_format),
+                      error_code=VALUES(error_code),
+                      updated_at=VALUES(updated_at)
+                    """,
+                    (
+                        row["task_id"],
+                        provider,
+                        row.get("remote_task_id"),
+                        row["created_at"],
+                        row["created_at"],
+                        row["updated_at"],
+                        duration_ms,
+                        1 if row.get("result_image_url") else 0,
+                        output_format,
+                        "GENERATION_FAILED" if row.get("error_message") else None,
+                        row["created_at"],
+                        row["updated_at"],
+                    ),
+                )
+
+                assets = [
+                    ("draft", row.get("draft_image_url"), "upload"),
+                    ("reference", row.get("reference_image_url"), "upload"),
+                    ("mask", row.get("mask_url"), "mask"),
+                    ("result", row.get("result_image_url"), "generation"),
+                ]
+                for asset_type, url, source in assets:
+                    if not url:
+                        continue
+                    existing = conn.execute(
+                        """
+                        SELECT id FROM design_assets
+                        WHERE task_id=? AND asset_type=? AND url=?
+                        LIMIT 1
+                        """,
+                        (row["task_id"], asset_type, url),
+                    ).fetchone()
+                    if existing:
+                        continue
+                    mime_type = "image/png" if str(url).lower().endswith(".png") or asset_type in {"mask", "result"} else "image/jpeg"
+                    conn.execute(
+                        """
+                        INSERT INTO design_assets (
+                          task_id, user_id, asset_type, url, source, mime_type, created_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (row["task_id"], user_id, asset_type, url, source, mime_type, row["created_at"]),
+                    )
+            conn.commit()
 
     def _ensure_column(self, conn: Any, table: str, column: str, definition: str) -> None:
         if self._mysql:
@@ -272,6 +534,59 @@ class TasksStore:
             if self._mysql:
                 definition = definition.replace("TEXT NOT NULL DEFAULT 'user'", "VARCHAR(32) NOT NULL DEFAULT 'user'")
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    def _drop_foreign_keys_for_column(self, conn: Any, table: str, column: str) -> None:
+        rows = conn.execute(
+            """
+            SELECT CONSTRAINT_NAME AS name
+            FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+            WHERE TABLE_SCHEMA=DATABASE()
+              AND TABLE_NAME=?
+              AND COLUMN_NAME=?
+              AND REFERENCED_TABLE_NAME IS NOT NULL
+            """,
+            (table, column),
+        ).fetchall()
+        for row in rows:
+            conn.execute(f"ALTER TABLE {table} DROP FOREIGN KEY {row['name']}")
+
+    def _drop_index_if_exists(self, conn: Any, table: str, index_name: str) -> None:
+        row = conn.execute(
+            """
+            SELECT INDEX_NAME AS name
+            FROM INFORMATION_SCHEMA.STATISTICS
+            WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND INDEX_NAME=?
+            LIMIT 1
+            """,
+            (table, index_name),
+        ).fetchone()
+        if row:
+            conn.execute(f"ALTER TABLE {table} DROP INDEX {index_name}")
+
+    def _drop_column_if_exists(self, conn: Any, table: str, column: str) -> None:
+        row = conn.execute(
+            """
+            SELECT COLUMN_NAME AS name
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME=?
+            LIMIT 1
+            """,
+            (table, column),
+        ).fetchone()
+        if row:
+            conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+
+    def _remove_project_room_tables(self, conn: Any) -> None:
+        if not self._mysql:
+            return
+        for column in ("project_id", "room_id"):
+            self._drop_foreign_keys_for_column(conn, "design_iterations", column)
+        self._drop_index_if_exists(conn, "design_iterations", "idx_design_iterations_project")
+        self._drop_index_if_exists(conn, "design_iterations", "idx_design_iterations_room")
+        self._drop_column_if_exists(conn, "design_iterations", "project_id")
+        self._drop_column_if_exists(conn, "design_iterations", "room_id")
+        conn.execute("DROP TABLE IF EXISTS project_rooms")
+        conn.execute("DROP TABLE IF EXISTS design_projects")
 
     def _normalize_mysql_schema(self, conn: Any) -> None:
         if not self._mysql:
@@ -364,6 +679,10 @@ class TasksStore:
         self._ensure_foreign_key(conn, "design_records", "fk_design_records_user", "user_id", "users", "id", "ON DELETE SET NULL")
         self._ensure_foreign_key(conn, "favorite_schemes", "fk_favorite_schemes_task", "task_id", "tasks", "task_id", "ON DELETE SET NULL")
         self._ensure_foreign_key(conn, "system_logs", "fk_system_logs_user", "user_id", "users", "id", "ON DELETE SET NULL")
+        self._ensure_foreign_key(conn, "design_assets", "fk_design_assets_task", "task_id", "tasks", "task_id", "ON DELETE CASCADE")
+        self._ensure_foreign_key(conn, "design_assets", "fk_design_assets_user", "user_id", "users", "id", "ON DELETE SET NULL")
+        self._ensure_foreign_key(conn, "design_iterations", "fk_design_iterations_task", "task_id", "tasks", "task_id", "ON DELETE CASCADE")
+        self._ensure_foreign_key(conn, "generation_metrics", "fk_generation_metrics_task", "task_id", "tasks", "task_id", "ON DELETE CASCADE")
 
         index_specs = {
             "users": [
@@ -405,6 +724,27 @@ class TasksStore:
                 ("idx_system_logs_action", "action"),
                 ("idx_system_logs_user_created", "user_id, created_at"),
                 ("idx_system_logs_target", "target_type, target_id"),
+            ],
+            "design_assets": [
+                ("idx_design_assets_task", "task_id"),
+                ("idx_design_assets_user", "user_id"),
+                ("idx_design_assets_type", "asset_type"),
+            ],
+            "design_iterations": [
+                ("idx_design_iterations_task", "task_id"),
+                ("idx_design_iterations_room_type", "room_type"),
+                ("idx_design_iterations_style", "design_style"),
+                ("idx_design_iterations_status", "status"),
+                ("idx_design_iterations_created", "created_at"),
+            ],
+            "generation_metrics": [
+                ("idx_generation_metrics_provider", "provider"),
+                ("idx_generation_metrics_remote", "remote_task_id"),
+                ("idx_generation_metrics_duration", "duration_ms"),
+            ],
+            "style_knowledge_base": [
+                ("idx_style_knowledge_category", "category"),
+                ("idx_style_knowledge_name", "name"),
             ],
         }
         for table, specs in index_specs.items():
