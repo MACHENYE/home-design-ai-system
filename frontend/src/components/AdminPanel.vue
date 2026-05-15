@@ -214,6 +214,7 @@ export default {
     },
   },
   emits: ["refresh-admin", "delete-record"],
+  // Initialize component state.
   data() {
     return {
       filters: {
@@ -232,36 +233,47 @@ export default {
     };
   },
   computed: {
+    // Return admin summary data.
     summary() {
       return this.dashboard.summary || {};
     },
+    // Return admin user data.
     users() {
       return this.dashboard.users || [];
     },
+    // Return admin record data.
     records() {
       return this.dashboard.records || [];
     },
+    // Return total record count.
     recordsTotal() {
       return Number(this.dashboard.recordsTotal || this.records.length || 0);
     },
+    // Return daily statistics.
     dailyStats() {
       return this.dashboard.dailyStats || [];
     },
+    // Return style statistics.
     styleStats() {
       return this.dashboard.styleStats || [];
     },
+    // Return room statistics.
     roomStats() {
       return this.dashboard.roomStats || [];
     },
+    // Return color statistics.
     colorStats() {
       return this.dashboard.colorStats || [];
     },
+    // Return material statistics.
     materialStats() {
       return this.dashboard.materialStats || [];
     },
+    // Return status statistics.
     statusStats() {
       return this.dashboard.statusStats || [];
     },
+    // Return filter options.
     options() {
       const serverOptions = this.dashboard.filterOptions || {};
       return {
@@ -272,9 +284,11 @@ export default {
         status: serverOptions.status || this.uniqueOptions("status"),
       };
     },
+    // Return paged filtered records.
     filteredRecords() {
       return this.records;
     },
+    // Build statistic tabs.
     statTabs() {
       return [
         this.statTab("daily", "近7日任务", "日期", this.dailyStats.map((item) => ({ ...item, name: item.day }))),
@@ -292,6 +306,7 @@ export default {
     },
   },
   methods: {
+    // Build one statistic tab.
     statTab(name, label, itemLabel, rows) {
       return {
         name,
@@ -301,17 +316,21 @@ export default {
         total: rows.reduce((sum, item) => sum + Number(item.value || 0), 0),
       };
     },
+    // Calculate statistic bar width.
     statPercent(value, total) {
       if (!total) return "0%";
       return `${Math.max(4, (Number(value || 0) / total) * 100)}%`;
     },
+    // Calculate statistic percent text.
     statPercentText(value, total) {
       if (!total) return "0%";
       return `${Math.round((Number(value || 0) / total) * 100)}%`;
     },
+    // Collect unique filter options.
     uniqueOptions(field) {
       return [...new Set(this.records.map((record) => record[field]).filter((value) => value !== null && value !== undefined && value !== ""))];
     },
+    // Reset admin filters.
     resetFilters() {
       this.filters = {
         username: "",
@@ -322,6 +341,7 @@ export default {
       };
       this.resetPageAndRefresh();
     },
+    // Build admin query parameters.
     queryPayload() {
       const [start, end] = this.dateRange || [];
       const payload = {
@@ -330,30 +350,37 @@ export default {
       };
       if (start) payload.start_at = Math.floor(Number(start) / 1000);
       if (end) payload.end_at = Math.floor(Number(end) / 1000) + 86399;
+      // Copy non-empty query parameters.
       Object.entries(this.filters).forEach(([key, value]) => {
         if (value !== null && value !== undefined && value !== "") payload[key] = value;
       });
       return payload;
     },
+    // Emit dashboard refresh.
     refreshDashboard() {
       this.$emit("refresh-admin", this.queryPayload());
     },
+    // Reset pagination and refresh.
     resetPageAndRefresh() {
       this.page = 1;
       this.refreshDashboard();
     },
+    // Open record detail.
     openRecord(record) {
       this.activeRecord = record;
       this.detailVisible = true;
     },
+    // Format a timestamp.
     formatTime(value) {
       const timestamp = Number(value);
       if (!timestamp) return "暂无";
       return new Date(timestamp * 1000).toLocaleString();
     },
+    // Format a score value.
     scoreText(value) {
       return value === null || value === undefined || value === "" ? "-" : `${value}`;
     },
+    // Format task status.
     statusLabel(value) {
       return { 1: "已创建", 2: "处理中", 3: "已完成", 4: "失败" }[Number(value)] || "未知";
     },

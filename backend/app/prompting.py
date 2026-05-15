@@ -3,7 +3,7 @@ from __future__ import annotations
 from .models import GenerateRequest
 
 
-def build_home_design_prompt(req: GenerateRequest) -> str:
+def build_home_design_prompt(req: GenerateRequest) -> str:  # 把表单参数拼接为完整的家装设计提示词
     parts: list[str] = [
         "You are an interior renovation rendering assistant.",
         "Generate a realistic, physically plausible home design rendering.",

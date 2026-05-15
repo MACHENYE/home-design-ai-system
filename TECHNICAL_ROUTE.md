@@ -29,11 +29,8 @@ flowchart LR
   F -->|上传底稿/参考图/掩码| A["FastAPI 资源接口"]
   F -->|提交设计参数| B["FastAPI 生成接口"]
   B --> C["Prompt 组装与约束描述"]
-  C --> D{"AI_PROVIDER"}
-  D -->|nanobanana| E["NanoBanana 外部 API"]
-  D -->|mock| M["演示结果生成器"]
+  C --> E["NanoBanana 外部 API"]
   E -->|callback / refresh| S["SQLite 任务表"]
-  M --> S
   S --> F
 ```
 
@@ -63,16 +60,13 @@ flowchart LR
 
 后端保留两种运行方式：
 
-- `AI_PROVIDER=mock`：无需 API Key，用于答辩演示系统闭环。
-- `AI_PROVIDER=nanobanana`：调用真实外部 API，不在本地部署模型。
-- `AI_PROVIDER=auto`：有 `NANOBANANA_API_KEY` 时调用真实 API，否则使用 mock。
+后端只保留 NanoBanana 真实接口调用方式，不再提供本地模拟生成结果。
 
 ## 6. 真实 API 调用注意事项
 
 如果使用本地上传图片调用 NanoBanana，外部 API 需要能访问这些图片 URL。因此真实生成时应配置：
 
 ```env
-AI_PROVIDER=nanobanana
 NANOBANANA_API_KEY=你的APIKey
 PUBLIC_BASE_URL=https://你的公网隧道地址
 ```
@@ -95,7 +89,6 @@ PUBLIC_BASE_URL=https://你的公网隧道地址
 - 使用异步任务、回调和主动刷新机制，解决外部生成 API 响应时间不稳定的问题。
 - 通过 Canvas mask 实现局部重绘交互，使系统从单次生成扩展到可迭代修改。
 - 将空间类型、风格、色彩、材质和文本需求结构化纳入 prompt，使用户偏好能够稳定转化为生成约束。
-- 使用 mock provider 保证无网络或无 API Key 时仍可完整展示系统流程。
 
 ## 9. 运行方式
 
@@ -148,7 +141,6 @@ copy .env.example .env
 | `backend/app/settings.py` | 系统配置文件，通过环境变量读取运行参数，包括 AI 服务商选择、NanoBanana API Key、公网基础地址、上传目录、SQLite 数据库路径、远程上传服务器地址、SFTP 用户和路径等。 | 配置管理、部署参数管理 |
 | `backend/app/prompting.py` | 提示词组装文件，将用户选择的空间类型、设计风格、色彩、材质、文本需求、排除项和结构保持开关转换为面向家装设计的结构化英文 prompt。 | Prompt 工程、生成约束表达 |
 | `backend/app/nanobanana_client.py` | NanoBanana 外部 API 客户端文件，封装 HTTP 请求逻辑，包括普通生成接口、Pro 生成接口和任务详情查询接口，使业务层不直接依赖底层 HTTP 调用细节。 | 第三方 AI API 封装 |
-| `backend/app/mock_provider.py` | 演示模式结果生成文件，在没有 API Key 或网络不稳定时返回可用的模拟任务和示例结果，保证答辩演示时系统流程可以完整跑通。 | Mock 演示模式、容错演示 |
 | `backend/app/tasks_store.py` | SQLite 数据访问文件，负责创建和维护用户表、会话表、任务表、设计记录表和收藏方案表，封装任务保存、结果更新、历史查询、收藏增删等数据库操作。 | 数据持久化、历史记录、收藏管理 |
 
 ### 10.3 后端辅助文件与运行文件

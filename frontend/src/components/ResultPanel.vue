@@ -85,13 +85,11 @@
         <div class="preview-grid">
           <div class="preview-card">
             <label>底稿</label>
-            <el-image v-if="displayDraftPreview" :src="displayDraftPreview" fit="cover"></el-image>
+            <div v-if="displayDraftPreview" class="preview-thumb-row">
+              <el-image :src="displayDraftPreview" fit="cover"></el-image>
+              <span>已上传</span>
+            </div>
             <span v-else>未上传</span>
-          </div>
-          <div class="preview-card">
-            <label>参考</label>
-            <el-image v-if="displayRefPreview" :src="displayRefPreview" fit="cover"></el-image>
-            <span v-else>可选</span>
           </div>
         </div>
       </div>
@@ -102,7 +100,7 @@
             <strong>方案详情</strong>
             <div class="inline-actions">
               <el-button size="small" plain :disabled="!canCompareRecord()" @click="$emit('compare-record-images')">对比查看</el-button>
-              <el-button size="small" type="danger" plain :disabled="!selectedRecord" @click="$emit('delete-current-record')">
+              <el-button size="small" type="danger" plain :disabled="!selectedHistoryTaskId && !currentTaskId" @click="$emit('delete-current-record')">
                 删除记录
               </el-button>
             </div>
@@ -142,10 +140,6 @@
               <div v-if="selectedRecord.draft_image_url">
                 <label>底稿图片</label>
                 <button type="button" @click="$emit('preview-image', selectedRecord.draft_image_url, '底稿')">查看</button>
-              </div>
-              <div v-if="selectedRecord.reference_image_url">
-                <label>参考图地址</label>
-                <button type="button" @click="$emit('preview-image', selectedRecord.reference_image_url, '参考图')">查看</button>
               </div>
               <div v-if="selectedRecord.result_image_url">
                 <label>生成结果</label>
@@ -236,10 +230,6 @@ export default {
       type: String,
       default: "",
     },
-    displayRefPreview: {
-      type: String,
-      default: "",
-    },
     isGenerating: {
       type: Boolean,
       default: false,
@@ -308,23 +298,27 @@ export default {
     "load-design-records",
     "open-history",
   ],
+  // Initialize component state.
   data() {
     return {
       feedbackForm: this.feedbackFromRecord(this.selectedRecord),
     };
   },
   computed: {
+    // Return the feedback task id.
     feedbackTaskId() {
       return this.selectedRecord?.task_id || this.currentTaskId || "";
     },
   },
   watch: {
     selectedRecord: {
+      // Handle handler logic.
       handler(record) {
         this.feedbackForm = this.feedbackFromRecord(record);
       },
       immediate: true,
     },
+    // Return the current task id.
     currentTaskId() {
       if (!this.selectedRecord) {
         this.feedbackForm = this.feedbackFromRecord(null);
@@ -332,6 +326,7 @@ export default {
     },
   },
   methods: {
+    // Fill feedback from a record.
     feedbackFromRecord(record) {
       return {
         lighting_score: record?.lighting_score || 0,
@@ -341,6 +336,7 @@ export default {
         feedback_text: record?.feedback_text || "",
       };
     },
+    // Submit feedback values.
     submitFeedback() {
       this.$emit("save-feedback", {
         taskId: this.feedbackTaskId,

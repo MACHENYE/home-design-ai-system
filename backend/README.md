@@ -8,7 +8,6 @@ It supports:
 - Image uploads exposed through `/uploads`
 - Async design generation tasks
 - NanoBanana callbacks and manual refresh
-- Mock mode for a runnable demo without local model deployment or API keys
 
 ## Setup
 
@@ -24,7 +23,6 @@ cp .env.example .env
 
 2) Fill in:
 
-- `AI_PROVIDER` (`auto`, `mock`, or `nanobanana`)
 - `NANOBANANA_API_KEY`
 - `PUBLIC_BASE_URL` (must be publicly reachable if you want NanoBanana callbacks to hit your server)
 

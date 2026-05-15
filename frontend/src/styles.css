@@ -414,9 +414,13 @@ body {
   grid-template-columns: 1fr;
 }
 
-.form-grid,
-.preview-grid {
+.form-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.preview-grid {
+  grid-template-columns: 1fr;
+  width: 100%;
 }
 
 .upload-box .el-upload,
@@ -822,11 +826,12 @@ body {
 }
 
 .preview-card {
-  min-height: 120px;
+  width: 100%;
+  min-height: 112px;
   display: grid;
   grid-template-rows: auto 1fr;
   gap: 8px;
-  padding: 10px;
+  padding: 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel-soft);
@@ -839,9 +844,31 @@ body {
 }
 
 .preview-card .el-image {
-  height: 92px;
+  width: 116px;
+  height: 76px;
   border-radius: 6px;
   overflow: hidden;
+}
+
+.preview-card > span {
+  min-height: 76px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed #d6dee2;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.preview-thumb-row {
+  min-height: 76px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.preview-thumb-row > span {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .history-block {

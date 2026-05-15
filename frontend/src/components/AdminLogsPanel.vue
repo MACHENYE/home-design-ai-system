@@ -87,6 +87,7 @@ export default {
     },
   },
   emits: ["refresh-logs"],
+  // Initialize component state.
   data() {
     return {
       filters: {
@@ -96,24 +97,29 @@ export default {
     };
   },
   methods: {
+    // Emit log refresh.
     refreshLogs() {
       const payload = { limit: 120 };
       if (this.filters.level) payload.level = this.filters.level;
       if (this.filters.username.trim()) payload.username = this.filters.username.trim();
       this.$emit("refresh-logs", payload);
     },
+    // Count logs by level.
     countByLevel(level) {
       return this.logs.filter((item) => item.level === level).length;
     },
+    // Format a timestamp.
     formatTime(value) {
       const timestamp = Number(value);
       if (!timestamp) return "-";
       return new Date(timestamp * 1000).toLocaleString();
     },
+    // Shorten long text.
     shortText(value, size = 16) {
       if (!value) return "";
       return value.length > size ? `${value.slice(0, size)}...` : value;
     },
+    // Return log level tag type.
     logLevelType(level) {
       return { error: "danger", warning: "warning", info: "success" }[level] || "info";
     },

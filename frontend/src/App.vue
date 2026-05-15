@@ -55,7 +55,6 @@
           <result-panel
             :display-result-image="displayResultImage"
             :display-draft-preview="displayDraftPreview"
-            :display-ref-preview="displayRefPreview"
             :is-generating="isGenerating"
             :task-state-text="taskStateText"
             :current-task-id="currentTaskId"
@@ -94,7 +93,7 @@
           />
         </main>
 
-        <main v-else class="admin-workspace">
+        <main v-else-if="activeTab === 'logs'" class="admin-workspace">
           <admin-logs-panel
             :logs="adminLogs"
             :loading="adminLogsLoading"
@@ -207,6 +206,7 @@ export default {
     ResultPanel,
   },
 
+  // Initialize component state.
   data() {
     return {
       apiBaseInput: window.location.protocol === "file:" ? "http://127.0.0.1:8001" : "",
@@ -228,11 +228,8 @@ export default {
       promptChips,
       aspectRatios,
       draftAsset: null,
-      refAsset: null,
       draftPreview: "",
-      refPreview: "",
       draftState: "未上传",
-      refState: "未上传",
       maskState: "未绘制",
       maskDirty: false,
       brushSize: 28,
@@ -298,37 +295,41 @@ export default {
   },
 
   computed: {
+    // Check whether the user is logged in.
     isAuthenticated() {
       return Boolean(this.authToken && this.currentUser);
     },
 
+    // Check whether the user is an admin.
     isAdmin() {
       return this.currentUser?.role === "admin";
     },
 
+    // Format the active provider label.
     providerText() {
-      if (this.provider === "mock") return "演示模式";
       if (this.provider === "nanobanana") return "API 模式";
       if (this.provider === "error") return "未连接";
       return "连接中";
     },
 
+    // Return the provider tag type.
     providerTagType() {
-      if (this.provider === "mock") return "warning";
       if (this.provider === "nanobanana") return "success";
       if (this.provider === "error") return "danger";
       return "info";
     },
 
+    // Compute the current workflow step.
     activeStep() {
       if (this.savedSchemes.length) return 5;
       if (this.maskDirty) return 4;
       if (this.currentTaskId) return 3;
       if (this.form.prompt.trim() && (this.form.room_type || this.form.design_style)) return 2;
-      if (this.draftAsset || this.refAsset) return 1;
+      if (this.draftAsset) return 1;
       return 0;
     },
 
+    // Compute the structure preservation score.
     structureScore() {
       let score = this.form.keep_structure ? 84 : 62;
       if (this.draftAsset) score += 8;
@@ -336,13 +337,14 @@ export default {
       return Math.min(score, 98);
     },
 
+    // Compute the style match score.
     styleScore() {
       let score = 72;
-      if (this.refAsset) score += 10;
       if (this.form.design_style) score += 8;
       return Math.min(score, 96);
     },
 
+    // Compute the material match score.
     materialScore() {
       let score = 66;
       if (this.form.material_preference) score += 10;
@@ -350,6 +352,7 @@ export default {
       return Math.min(score, 94);
     },
 
+    // Return the base image for comparison.
     compareBaseImage() {
       if (this.compareMode === "result-saved") {
         return this.resultImage || "";
@@ -357,6 +360,7 @@ export default {
       return this.draftPreview || this.resultImage || "";
     },
 
+    // Return the target image for comparison.
     compareTargetImage() {
       if (this.compareMode === "result-saved") {
         return this.selectedSavedScheme?.image || this.resultImage || "";
@@ -364,10 +368,12 @@ export default {
       return this.resultImage || this.selectedSavedScheme?.image || "";
     },
 
+    // Return the selected favorite scheme.
     selectedSavedScheme() {
       return this.savedSchemes.find((item) => item.id === this.selectedSavedSchemeId) || null;
     },
 
+    // Return the draft preview image.
     displayDraftPreview() {
       if (this.selectedHistoryTaskId) {
         return this.selectedRecord?.task_id === this.selectedHistoryTaskId
@@ -377,15 +383,7 @@ export default {
       return this.draftPreview;
     },
 
-    displayRefPreview() {
-      if (this.selectedHistoryTaskId) {
-        return this.selectedRecord?.task_id === this.selectedHistoryTaskId
-          ? this.selectedRecord.reference_image_url || ""
-          : "";
-      }
-      return this.refPreview;
-    },
-
+    // Return the result image to display.
     displayResultImage() {
       if (this.selectedHistoryTaskId) {
         return this.selectedRecord?.task_id === this.selectedHistoryTaskId
@@ -395,10 +393,12 @@ export default {
       return this.resultImage;
     },
 
+    // Check whether generation is in progress.
     isGenerating() {
       return this.submitting || (Boolean(this.generatingTaskId) && !this.taskStateText.includes("失败"));
     },
 
+    // Build the current insight indicators.
     currentInsights() {
       return [
         {
@@ -413,15 +413,13 @@ export default {
         },
         {
           title: "生成建议",
-          text:
-            this.refAsset
-              ? "已经具备风格参考图，当前更适合做高保真风格迁移。"
-              : "还没有参考图时，建议在需求描述里多写灯光、材质和氛围关键词。",
+          text: "建议在需求描述里写清灯光、材质、氛围和需要保留的空间结构。",
         },
       ];
     },
   },
 
+  // Run component startup work.
   mounted() {
     this.history = this.normalizeHistory(this.history);
     this.saveHistory();
@@ -432,11 +430,13 @@ export default {
     }
   },
 
+  // Clean up timers before unmounting.
   beforeUnmount() {
     window.clearTimeout(this.pollTimer);
   },
 
   methods: {
+    // Resolve the API base URL.
     apiBase() {
       const raw = this.apiBaseInput.trim();
       if (raw) return raw.replace(/\/$/, "");
@@ -444,15 +444,18 @@ export default {
       return "";
     },
 
+    // Build a full API path.
     apiPath(path) {
       return `${this.apiBase()}${path}`;
     },
 
+    // Build an asset preview URL.
     assetPreviewUrl(url) {
       if (!url || !url.startsWith("/")) return url;
       return this.apiPath(url);
     },
 
+    // Send an authenticated API request.
     async request(path, options = {}) {
       const headers = new Headers(options.headers || {});
       if (this.authToken && !headers.has("Authorization")) {
@@ -472,6 +475,7 @@ export default {
       return data;
     },
 
+    // Submit login or registration.
     async submitAuth() {
       if (!this.authForm.username.trim() || !this.authForm.password) {
         ElMessage.warning("请输入账号和密码");
@@ -496,6 +500,7 @@ export default {
       }
     },
 
+    // Store auth data after login.
     applyAuth(auth) {
       this.authToken = auth.token;
       this.currentUser = auth.user;
@@ -512,11 +517,12 @@ export default {
       this.loadFavorites(false);
     },
 
+    // Load the current user profile.
     async loadMe() {
       try {
         const user = await this.request("/api/v1/auth/me");
         this.currentUser = user;
-        if (!this.isAdmin && this.activeTab === "admin") {
+        if (!this.isAdmin && this.activeTab !== "studio") {
           this.activeTab = "studio";
         }
         nextTick(() => this.setupCanvas());
@@ -527,6 +533,7 @@ export default {
       }
     },
 
+    // Clear local auth state.
     clearAuth() {
       this.authToken = "";
       this.currentUser = null;
@@ -543,6 +550,7 @@ export default {
       localStorage.removeItem("home-design-token");
     },
 
+    // Log out the current user.
     async logout() {
       try {
         await this.request("/api/v1/auth/logout", { method: "POST" });
@@ -553,11 +561,13 @@ export default {
       ElMessage.success("已退出登录");
     },
 
+    // Reload backend status and presets.
     reloadBackend() {
       this.loadHealth();
       this.loadPresets();
     },
 
+    // Open the admin dashboard.
     async openAdminPanel() {
       if (!this.isAdmin) {
         ElMessage.warning("只有 admin 用户可以访问管理后台");
@@ -567,6 +577,7 @@ export default {
       await this.loadAdminDashboard();
     },
 
+    // Open the admin logs panel.
     async openAdminLogs() {
       if (!this.isAdmin) {
         ElMessage.warning("只有 admin 用户可以访问管理后台");
@@ -576,12 +587,14 @@ export default {
       await this.loadAdminLogs();
     },
 
+    // Load admin dashboard data.
     async loadAdminDashboard(query = null) {
       if (!this.isAuthenticated || !this.isAdmin) return;
       if (query) this.adminQuery = { ...this.adminQuery, ...query };
       this.adminLoading = true;
       try {
         const params = new URLSearchParams();
+        // Copy non-empty query parameters.
         Object.entries(this.adminQuery).forEach(([key, value]) => {
           if (value !== null && value !== undefined && value !== "") params.set(key, String(value));
         });
@@ -593,12 +606,14 @@ export default {
       }
     },
 
+    // Load admin log data.
     async loadAdminLogs(query = null) {
       if (!this.isAuthenticated || !this.isAdmin) return;
       this.adminLogsLoading = true;
       try {
         const params = new URLSearchParams();
         const payload = { limit: 120, ...(query || {}) };
+        // Copy non-empty query parameters.
         Object.entries(payload).forEach(([key, value]) => {
           if (value !== null && value !== undefined && value !== "") params.set(key, String(value));
         });
@@ -610,6 +625,7 @@ export default {
       }
     },
 
+    // Delete an admin-selected record.
     async deleteAdminRecord(record) {
       if (!record?.task_id) return;
       try {
@@ -637,6 +653,7 @@ export default {
       }
     },
 
+    // Open the image preview dialog.
     previewImage(url, title = "图片预览") {
       if (!url) return;
       this.imagePreview = {
@@ -646,10 +663,12 @@ export default {
       };
     },
 
+    // Check whether a record can be compared.
     canCompareRecord(record = this.selectedRecord) {
       return Boolean(record?.draft_image_url && record?.result_image_url);
     },
 
+    // Open image comparison for a record.
     compareRecordImages(record = this.selectedRecord) {
       if (!this.canCompareRecord(record)) {
         ElMessage.warning("当前记录缺少底稿或结果图，无法对比");
@@ -662,6 +681,7 @@ export default {
       };
     },
 
+    // Load backend health status.
     async loadHealth() {
       try {
         const health = await this.request("/healthz");
@@ -671,6 +691,7 @@ export default {
       }
     },
 
+    // Load design presets.
     async loadPresets() {
       try {
         const presets = await this.request("/api/v1/design/presets");
@@ -681,6 +702,7 @@ export default {
       }
     },
 
+    // Apply default preset values.
     applyPresetDefaults() {
       const defaults = [
         ["room_type", this.presets.roomTypes],
@@ -693,10 +715,11 @@ export default {
       }
     },
 
+    // Handle an uploaded file.
     async handleFile(file, type) {
       const raw = file?.raw || file;
       if (!raw) return;
-      const label = type === "draft" ? "底稿" : "参考图";
+      const label = "底稿";
       try {
         ElMessage.info(`正在上传${label}...`);
         const asset = await this.uploadBlob(raw, raw.name, raw.type);
@@ -711,6 +734,7 @@ export default {
       }
     },
 
+    // Store an uploaded asset.
     setAsset(type, url, previewUrl) {
       const asset = { url, previewUrl };
       this.prepareNewDesignView();
@@ -723,13 +747,10 @@ export default {
         this.draftPreview = previewUrl;
         this.draftState = "已就绪";
         nextTick(() => this.drawDraftToCanvas(previewUrl));
-      } else {
-        this.refAsset = asset;
-        this.refPreview = previewUrl;
-        this.refState = "已就绪";
       }
     },
 
+    // Reset the design workspace.
     prepareNewDesignView() {
       window.clearTimeout(this.pollTimer);
       this.pollingTaskId = "";
@@ -745,6 +766,7 @@ export default {
       this.project.stage = "方案准备";
     },
 
+    // Upload binary asset data.
     async uploadBlob(blob, filename, contentType = "image/png") {
       return this.request(`/api/v1/assets/upload?filename=${encodeURIComponent(filename || "upload.png")}`, {
         method: "POST",
@@ -753,14 +775,17 @@ export default {
       });
     },
 
+    // Initialize the mask canvas.
     setupCanvas() {
       this.$refs.controlPanelRef?.setupCanvas?.();
     },
 
+    // Draw the draft image on canvas.
     drawDraftToCanvas(url) {
       this.$refs.controlPanelRef?.drawDraftToCanvas?.(url);
     },
 
+    // Clear the mask canvas.
     clearMask() {
       if (this.$refs.controlPanelRef?.clearMask) {
         this.$refs.controlPanelRef.clearMask();
@@ -770,15 +795,18 @@ export default {
       }
     },
 
+    // Convert the mask canvas to a blob.
     canvasToBlob() {
       return this.$refs.controlPanelRef?.canvasToBlob?.();
     },
 
+    // Append text to the prompt.
     appendPrompt(text) {
       const trimmed = this.form.prompt.trim();
       this.form.prompt = trimmed ? `${trimmed}，${text}` : text;
     },
 
+    // Optimize the design prompt.
     async optimizePrompt() {
       if (!this.form.prompt.trim()) {
         ElMessage.warning("请先填写需求描述");
@@ -811,10 +839,12 @@ export default {
       }
     },
 
+    // Check whether a preset is active.
     isPresetActive(preset) {
       return Boolean(this.activePresetName && this.activePresetName === preset.name);
     },
 
+    // Apply a quick design preset.
     applyQuickPreset(preset) {
       this.activePresetName = preset.name;
       this.recommendationActive = false;
@@ -826,18 +856,19 @@ export default {
       ElMessage.success(`已套用「${preset.name}」模板`);
     },
 
+    // Collect images for recommendations.
     recommendationImageUrls() {
       const imageUrls = [];
       if (this.draftAsset?.url) imageUrls.push(this.draftAsset.url);
-      if (this.refAsset?.url) imageUrls.push(this.refAsset.url);
       return imageUrls;
     },
 
+    // Refresh smart style templates.
     async refreshStyleTemplates(showMessage = true) {
       if (!this.isAuthenticated) return;
       const imageUrls = this.recommendationImageUrls();
       if (!imageUrls.length) {
-        if (showMessage) ElMessage.warning("请先上传底稿或风格参考图");
+        if (showMessage) ElMessage.warning("请先上传底稿");
         return;
       }
       this.recommendationLoading = true;
@@ -876,6 +907,7 @@ export default {
       }
     },
 
+    // Submit a design generation job.
     async submitDesign() {
       if (!this.form.prompt.trim()) {
         ElMessage.warning("请填写需求描述");
@@ -897,7 +929,6 @@ export default {
       try {
         const imageUrls = [];
         if (this.draftAsset?.url) imageUrls.push(this.draftAsset.url);
-        if (this.refAsset?.url) imageUrls.push(this.refAsset.url);
 
         let maskUrl = null;
         if (this.maskDirty) {
@@ -933,11 +964,13 @@ export default {
       }
     },
 
+    // Start polling task status.
     startPolling(taskId, immediate = false) {
       window.clearTimeout(this.pollTimer);
       this.pollingTaskId = taskId;
       this.pollTickCount = 0;
 
+      // Poll the current generation task.
       const tick = async () => {
         if (this.pollingTaskId !== taskId) return;
         await this.refreshTask(taskId, false);
@@ -951,11 +984,13 @@ export default {
       this.pollTimer = window.setTimeout(tick, immediate ? 0 : 800);
     },
 
+    // Refresh the active task.
     refreshCurrentTask() {
       const taskId = this.generatingTaskId || this.currentTaskId;
       if (taskId) this.refreshTask(taskId, true);
     },
 
+    // Refresh a specific task.
     async refreshTask(taskId, manual) {
       if (!taskId) return;
       try {
@@ -973,6 +1008,7 @@ export default {
       }
     },
 
+    // Render task status and result.
     renderTask(task) {
       const status = Number(task.status);
       const isPrimaryTask = !this.generatingTaskId || task.task_id === this.generatingTaskId;
@@ -1003,27 +1039,28 @@ export default {
       }
     },
 
+    // Apply selected record data.
     applyRecordAssets(record) {
       if (!record) return;
       this.selectedRecord = record;
     },
 
+    // Clear uploaded input assets.
     clearInputAssets() {
       this.draftAsset = null;
-      this.refAsset = null;
       this.draftPreview = "";
-      this.refPreview = "";
       this.draftState = "未上传";
-      this.refState = "未上传";
       this.clearMask();
     },
 
+    // Build the result download filename.
     resultFilename() {
       const sourceTaskId = this.selectedHistoryTaskId || this.currentTaskId;
       const taskPart = sourceTaskId ? this.shortTaskId(sourceTaskId).replace(/\W+/g, "-") : Date.now();
       return `home-design-${taskPart}.png`;
     },
 
+    // Download or open the result image.
     async downloadResultImage() {
       const imageUrl = this.displayResultImage;
       if (!imageUrl) {
@@ -1043,7 +1080,6 @@ export default {
         link.click();
         link.remove();
         URL.revokeObjectURL(blobUrl);
-        ElMessage.success("图片已开始下载");
       } catch (err) {
         const link = document.createElement("a");
         link.href = imageUrl;
@@ -1052,16 +1088,17 @@ export default {
         document.body.appendChild(link);
         link.click();
         link.remove();
-        ElMessage.warning("浏览器无法直接下载，已打开原图链接");
       }
     },
 
+    // Open a printable PDF report.
     savePdfReport() {
       const record = this.selectedRecord;
       if (!record) {
         ElMessage.warning("请先选择一个已生成的方案");
         return;
       }
+      // Escape HTML for the report.
       const escapeHtml = (value) =>
         String(value ?? "")
           .replace(/&/g, "&amp;")
@@ -1071,7 +1108,9 @@ export default {
       const time = record.created_at
         ? new Date(this.toTimestampMs(record.created_at)).toLocaleString()
         : "-";
+      // Format report scores.
       const score = (value) => (value ? `${value} / 5` : "-");
+      // Build a report image section.
       const imageHtml = (title, url) =>
         url
           ? `<section><h2>${title}</h2><img src="${escapeHtml(url)}" alt="${title}" /></section>`
@@ -1135,6 +1174,7 @@ export default {
       reportWindow.document.close();
     },
 
+    // Save the current scheme as favorite.
     async saveCurrentScheme() {
       const imageUrl = this.displayResultImage;
       if (!imageUrl) {
@@ -1172,13 +1212,14 @@ export default {
       }
     },
 
+    // Select and load a favorite scheme.
     async selectSavedScheme(scheme) {
       this.selectedSavedSchemeId = scheme.id;
       this.currentTaskId = scheme.taskId || "";
       this.selectedRecord = null;
       this.selectedHistoryTaskId = "";
       this.compareMode = "result-saved";
-      this.activeTab = "compare";
+      this.activeTab = "studio";
       this.resultImage = scheme.image;
 
       if (!scheme.taskId) return;
@@ -1193,6 +1234,7 @@ export default {
       await this.loadDesignRecord(scheme.taskId, false);
     },
 
+    // Convert favorite data to UI data.
     favoriteToScheme(favorite) {
       const createdAt = this.toTimestampMs(favorite.created_at) || Date.now();
       return {
@@ -1206,6 +1248,7 @@ export default {
       };
     },
 
+    // Load favorite schemes.
     async loadFavorites(showMessage = true) {
       try {
         const favorites = await this.request("/api/v1/favorites?limit=30");
@@ -1216,6 +1259,7 @@ export default {
       }
     },
 
+    // Remove a favorite scheme.
     async removeFavorite(scheme) {
       if (!scheme?.id) return;
       try {
@@ -1228,6 +1272,7 @@ export default {
       }
     },
 
+    // Save design feedback.
     async saveDesignFeedback(payload) {
       const taskId = payload?.taskId || this.selectedHistoryTaskId || this.currentTaskId;
       if (!taskId) {
@@ -1260,15 +1305,18 @@ export default {
       }
     },
 
+    // Shorten a task id for display.
     shortTaskId(taskId) {
       if (!taskId || taskId.length <= 18) return taskId || "";
       return `${taskId.slice(0, 10)}...${taskId.slice(-4)}`;
     },
 
+    // Normalize local history items.
     normalizeHistory(items) {
       const fallbackBase = Date.now();
       return (Array.isArray(items) ? items : [])
         .filter((item) => item?.taskId)
+        // Normalize each history item.
         .map((item, index) => {
           const createdAt = this.toTimestampMs(item.createdAt) || this.parseHistoryTime(item.time) || fallbackBase - index;
           return {
@@ -1281,22 +1329,26 @@ export default {
         .slice(0, 30);
     },
 
+    // Convert timestamps to milliseconds.
     toTimestampMs(value) {
       const timestamp = Number(value);
       if (!Number.isFinite(timestamp) || timestamp <= 0) return 0;
       return timestamp < 1000000000000 ? timestamp * 1000 : timestamp;
     },
 
+    // Parse history time text.
     parseHistoryTime(value) {
       if (!value) return 0;
       const parsed = Date.parse(value);
       return Number.isFinite(parsed) ? parsed : 0;
     },
 
+    // Persist local history.
     saveHistory() {
       localStorage.setItem("home-design-history", JSON.stringify(this.history));
     },
 
+    // Add or update a history item.
     addHistory(taskId, status, createdAtValue) {
       const existing = this.history.find((item) => item.taskId === taskId);
       const createdAt = existing?.createdAt || this.toTimestampMs(createdAtValue) || Date.now();
@@ -1309,6 +1361,7 @@ export default {
       this.saveHistory();
     },
 
+    // Convert a record to a history item.
     recordToHistoryItem(record) {
       return {
         taskId: record.task_id,
@@ -1318,6 +1371,7 @@ export default {
       };
     },
 
+    // Cache a design record.
     cacheRecord(record) {
       if (!record?.task_id) return;
       this.recordCache = { ...this.recordCache, [record.task_id]: record };
@@ -1330,6 +1384,7 @@ export default {
       }
     },
 
+    // Load design record list.
     async loadDesignRecords(showMessage = true) {
       try {
         const params = new URLSearchParams({ limit: "30" });
@@ -1345,6 +1400,7 @@ export default {
       }
     },
 
+    // Load one design record.
     async loadDesignRecord(taskId, showMessage = true) {
       if (!taskId) return;
       try {
@@ -1357,6 +1413,19 @@ export default {
         if (!this.generatingTaskId && record.result_image_url) this.resultImage = record.result_image_url;
         if (showMessage) ElMessage.success("记录详情已加载");
       } catch (err) {
+        if (err.status === 404) {
+          const nextCache = { ...this.recordCache };
+          delete nextCache[taskId];
+          this.recordCache = nextCache;
+          if (taskId === this.selectedHistoryTaskId) {
+            this.selectedRecord = null;
+          }
+          if (showMessage) {
+            this.history = this.history.filter((item) => item.taskId !== taskId);
+            this.saveHistory();
+          }
+          return;
+        }
         if (taskId === this.selectedHistoryTaskId) {
           this.selectedRecord = this.recordCache[taskId] || null;
         }
@@ -1364,20 +1433,31 @@ export default {
       }
     },
 
+    // Delete the current design record.
     async deleteCurrentRecord() {
-      if (!this.currentTaskId) return;
+      const taskId = this.selectedHistoryTaskId || this.currentTaskId;
+      if (!taskId) return;
       const ok = window.confirm("确定删除这条设计记录吗？删除后最近任务和详情中将不再显示它。");
       if (!ok) return;
       try {
-        await this.request(`/api/v1/design/records/${encodeURIComponent(this.currentTaskId)}`, { method: "DELETE" });
+        try {
+          await this.request(`/api/v1/design/records/${encodeURIComponent(taskId)}`, { method: "DELETE" });
+        } catch (err) {
+          if (err.status !== 404) throw err;
+          try {
+            await this.request(`/api/v1/tasks/${encodeURIComponent(taskId)}`, { method: "DELETE" });
+          } catch (taskErr) {
+            if (taskErr.status !== 404) throw taskErr;
+          }
+        }
         const nextCache = { ...this.recordCache };
-        delete nextCache[this.currentTaskId];
+        delete nextCache[taskId];
         this.recordCache = nextCache;
-        this.history = this.history.filter((item) => item.taskId !== this.currentTaskId);
+        this.history = this.history.filter((item) => item.taskId !== taskId);
         this.saveHistory();
         this.selectedRecord = null;
         this.selectedHistoryTaskId = "";
-        this.currentTaskId = "";
+        if (this.currentTaskId === taskId) this.currentTaskId = "";
         this.taskStateText = "等待提交";
         this.resultImage = "";
         ElMessage.success("记录已删除");
@@ -1386,6 +1466,7 @@ export default {
       }
     },
 
+    // Load task history from server.
     async loadServerHistory(showMessage = true) {
       try {
         const tasks = await this.request("/api/v1/tasks?limit=20");
@@ -1398,10 +1479,11 @@ export default {
       }
     },
 
+    // Open a history item.
     openHistory(taskId) {
       this.selectedSavedSchemeId = "";
       this.selectedHistoryTaskId = taskId;
-      this.activeTab = "archive";
+      this.activeTab = "studio";
       this.selectedRecord = this.recordCache[taskId] || null;
       if (!this.generatingTaskId) {
         this.currentTaskId = taskId;
@@ -1411,9 +1493,6 @@ export default {
         this.selectedRecord = cached;
         this.applyRecordAssets(cached);
         if (!this.generatingTaskId && cached.result_image_url) this.resultImage = cached.result_image_url;
-      }
-      if (!this.generatingTaskId) {
-        this.refreshTask(taskId, true);
       }
       this.loadDesignRecord(taskId, true);
     },

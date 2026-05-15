@@ -45,9 +45,11 @@ export default {
   },
   emits: ["update:imagePreview", "update:comparePreview"],
   methods: {
+    // Sync image dialog visibility.
     updateImageVisible(visible) {
       this.$emit("update:imagePreview", { ...this.imagePreview, visible });
     },
+    // Sync compare dialog visibility.
     updateCompareVisible(visible) {
       this.$emit("update:comparePreview", { ...this.comparePreview, visible });
     },

@@ -99,7 +99,6 @@ backend/.env
 核心配置示例：
 
 ```env
-AI_PROVIDER=nanobanana
 NANOBANANA_API_KEY=你的NanoBanana密钥
 NANOBANANA_BASE_URL=https://api.nanobananaapi.ai/api/v1/nanobanana
 

@@ -238,11 +238,13 @@ export default {
     "update:maskDirty",
     "update:maskState",
   ],
+  // Run component startup work.
   mounted() {
     this.setupCanvas();
     if (this.draftPreview) this.drawDraftToCanvas(this.draftPreview);
   },
   methods: {
+    // Initialize the mask canvas.
     setupCanvas() {
       const canvas = this.$refs.maskCanvasRef;
       if (!canvas) return;
@@ -252,6 +254,7 @@ export default {
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
 
+      // Handle pointer down drawing.
       canvas.addEventListener("pointerdown", (event) => {
         canvas.setPointerCapture(event.pointerId);
         const p = this.canvasPoint(event);
@@ -259,6 +262,7 @@ export default {
         ctx.moveTo(p.x, p.y);
       });
 
+      // Handle pointer move drawing.
       canvas.addEventListener("pointermove", (event) => {
         if (event.buttons !== 1) return;
         const p = this.canvasPoint(event);
@@ -271,6 +275,7 @@ export default {
       });
     },
 
+    // Calculate pointer coordinates on canvas.
     canvasPoint(event) {
       const canvas = this.$refs.maskCanvasRef;
       const rect = canvas.getBoundingClientRect();
@@ -280,12 +285,14 @@ export default {
       };
     },
 
+    // Draw the draft image on canvas.
     drawDraftToCanvas(url) {
       const canvas = this.$refs.draftCanvasRef;
       if (!canvas) return;
       const ctx = canvas.getContext("2d");
       const img = new Image();
       img.crossOrigin = "anonymous";
+      // Draw the image after it loads.
       img.onload = () => {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.fillStyle = "#f7f4ed";
@@ -302,6 +309,7 @@ export default {
       img.src = url;
     },
 
+    // Clear the mask canvas.
     clearMask() {
       const canvas = this.$refs.maskCanvasRef;
       if (!canvas) return;
@@ -310,6 +318,7 @@ export default {
       this.$emit("update:maskState", "未绘制");
     },
 
+    // Convert the mask canvas to a blob.
     canvasToBlob() {
       const canvas = this.$refs.maskCanvasRef;
       return new Promise((resolve) => canvas.toBlob(resolve, "image/png"));

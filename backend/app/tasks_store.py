@@ -20,37 +20,37 @@ from .models import (
 )
 
 
-class MySQLConnectionAdapter:
-    def __init__(self, conn: Any):
+class MySQLConnectionAdapter:  # 封装 PyMySQL 连接，使其提供接近 sqlite 的执行接口
+    def __init__(self, conn: Any):  # 初始化对象并保存必要的连接或配置状态
         self._conn = conn
 
-    def __enter__(self) -> "MySQLConnectionAdapter":
+    def __enter__(self) -> "MySQLConnectionAdapter":  # 进入数据库连接上下文并返回适配器自身
         return self
 
-    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:  # 退出上下文时关闭底层数据库连接
         self._conn.close()
 
-    def execute(self, sql: str, params: list[object] | tuple[object, ...] = ()):
+    def execute(self, sql: str, params: list[object] | tuple[object, ...] = ()):  # 执行 SQL 语句并把 sqlite 风格占位符转换为 MySQL 占位符
         cursor = self._conn.cursor()
         cursor.execute(sql.replace("?", "%s"), params)
         return cursor
 
-    def cursor(self):
+    def cursor(self):  # 返回底层 PyMySQL 游标，供复杂查询直接使用
         return self._conn.cursor()
 
-    def commit(self) -> None:
+    def commit(self) -> None:  # 提交当前数据库事务，确保写入生效
         self._conn.commit()
 
 
-class TasksStore:
-    def __init__(self, database_url: str):
+class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等数据库访问逻辑
+    def __init__(self, database_url: str):  # 初始化对象并保存必要的连接或配置状态
         self._database_url = database_url.strip()
         self._mysql = self._database_url.startswith(("mysql://", "mysql+pymysql://"))
         if not self._mysql:
             raise RuntimeError("DATABASE_URL must be configured with a MySQL connection string.")
         self._init()
 
-    def _connect(self):
+    def _connect(self):  # 根据数据库 URL 创建一个新的 MySQL 连接
         if self._mysql:
             try:
                 import pymysql
@@ -70,20 +70,20 @@ class TasksStore:
             return MySQLConnectionAdapter(conn)
         raise RuntimeError("SQLite is disabled. Configure DATABASE_URL to use MySQL.")
 
-    def _execute(self, conn: Any, sql: str, params: list[object] | tuple[object, ...] = ()):
+    def _execute(self, conn: Any, sql: str, params: list[object] | tuple[object, ...] = ()):  # 统一执行 SQL 语句，兼容不同数据库占位符写法
         if not self._mysql:
             return conn.execute(sql, params)
         cursor = conn.cursor()
         cursor.execute(sql.replace("?", "%s"), params)
         return cursor
 
-    def _fetchone(self, conn: Any, sql: str, params: list[object] | tuple[object, ...] = ()):
+    def _fetchone(self, conn: Any, sql: str, params: list[object] | tuple[object, ...] = ()):  # 执行查询并返回第一条数据库记录
         return self._execute(conn, sql, params).fetchone()
 
-    def _fetchall(self, conn: Any, sql: str, params: list[object] | tuple[object, ...] = ()):
+    def _fetchall(self, conn: Any, sql: str, params: list[object] | tuple[object, ...] = ()):  # 执行查询并返回全部数据库记录
         return self._execute(conn, sql, params).fetchall()
 
-    def _create_table(self, conn: Any, sql: str) -> None:
+    def _create_table(self, conn: Any, sql: str) -> None:  # 创建数据表，并在 MySQL 下转换字段类型定义
         if self._mysql:
             sql = sql.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "INTEGER PRIMARY KEY AUTO_INCREMENT")
             sql = sql.replace("task_id TEXT PRIMARY KEY", "task_id VARCHAR(191) PRIMARY KEY")
@@ -101,13 +101,13 @@ class TasksStore:
             sql = sql.replace("style TEXT NULL", "style VARCHAR(64) NULL")
         self._execute(conn, sql)
 
-    def _last_insert_id(self, cursor: Any) -> int:
+    def _last_insert_id(self, cursor: Any) -> int:  # 读取最近一次插入操作产生的自增主键
         return int(cursor.lastrowid)
 
-    def _row_dict(self, row: Any) -> dict[str, Any]:
+    def _row_dict(self, row: Any) -> dict[str, Any]:  # 将数据库行对象转换为普通字典
         return dict(row) if row else {}
 
-    def _plain_dict(self, row: Any) -> dict[str, Any]:
+    def _plain_dict(self, row: Any) -> dict[str, Any]:  # 将数据库行中的 Decimal 和日期等值转换为可 JSON 化数据
         data = dict(row) if row else {}
         return {
             key: (
@@ -120,7 +120,7 @@ class TasksStore:
             for key, value in data.items()
         }
 
-    def _init(self) -> None:
+    def _init(self) -> None:  # 初始化全部业务表、字段、外键、索引和种子数据
         with self._connect() as conn:
             self._create_table(
                 conn,
@@ -335,13 +335,7 @@ class TasksStore:
         self._backfill_design_records()
         self._seed_analytics_tables()
 
-    def _seed_analytics_tables(self) -> None:
-        """Populate thesis/demo analytics tables from existing design records.
-
-        These tables make the data model closer to a real design-product domain:
-        generation iteration -> assets/metrics -> style knowledge. The operation is
-        idempotent so it is safe to run on each backend startup.
-        """
+    def _seed_analytics_tables(self) -> None:  # 根据已有设计记录回填素材、迭代、指标和知识库辅助数据
         now = int(time.time())
         styles = [
             ("风格", "现代简约", "暖白、原木、黑白灰", "原木、微水泥、金属线条", "强调干净线条、功能收纳和通透采光。", "减少装饰噪声，保留空间边界，突出自然光与克制材质。"),
@@ -517,7 +511,7 @@ class TasksStore:
                     )
             conn.commit()
 
-    def _ensure_column(self, conn: Any, table: str, column: str, definition: str) -> None:
+    def _ensure_column(self, conn: Any, table: str, column: str, definition: str) -> None:  # 检查字段是否存在，不存在时自动添加
         if self._mysql:
             rows = conn.execute(
                 """
@@ -535,7 +529,7 @@ class TasksStore:
                 definition = definition.replace("TEXT NOT NULL DEFAULT 'user'", "VARCHAR(32) NOT NULL DEFAULT 'user'")
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
-    def _drop_foreign_keys_for_column(self, conn: Any, table: str, column: str) -> None:
+    def _drop_foreign_keys_for_column(self, conn: Any, table: str, column: str) -> None:  # 删除指定表字段上的外键约束，便于迁移旧结构
         rows = conn.execute(
             """
             SELECT CONSTRAINT_NAME AS name
@@ -550,7 +544,7 @@ class TasksStore:
         for row in rows:
             conn.execute(f"ALTER TABLE {table} DROP FOREIGN KEY {row['name']}")
 
-    def _drop_index_if_exists(self, conn: Any, table: str, index_name: str) -> None:
+    def _drop_index_if_exists(self, conn: Any, table: str, index_name: str) -> None:  # 检查索引是否存在，存在时删除该索引
         row = conn.execute(
             """
             SELECT INDEX_NAME AS name
@@ -563,7 +557,7 @@ class TasksStore:
         if row:
             conn.execute(f"ALTER TABLE {table} DROP INDEX {index_name}")
 
-    def _drop_column_if_exists(self, conn: Any, table: str, column: str) -> None:
+    def _drop_column_if_exists(self, conn: Any, table: str, column: str) -> None:  # 检查字段是否存在，存在时删除该字段
         row = conn.execute(
             """
             SELECT COLUMN_NAME AS name
@@ -576,7 +570,7 @@ class TasksStore:
         if row:
             conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
 
-    def _remove_project_room_tables(self, conn: Any) -> None:
+    def _remove_project_room_tables(self, conn: Any) -> None:  # 清理已经废弃的项目表和房间表及相关字段
         if not self._mysql:
             return
         for column in ("project_id", "room_id"):
@@ -588,7 +582,7 @@ class TasksStore:
         conn.execute("DROP TABLE IF EXISTS project_rooms")
         conn.execute("DROP TABLE IF EXISTS design_projects")
 
-    def _normalize_mysql_schema(self, conn: Any) -> None:
+    def _normalize_mysql_schema(self, conn: Any) -> None:  # 统一 MySQL 字段类型、历史数据、外键和索引结构
         if not self._mysql:
             return
         column_types = {
@@ -621,7 +615,7 @@ class TasksStore:
             for column, definition in columns.items():
                 self._modify_column_if_exists(conn, table, column, definition)
 
-        # Normalize old rows before foreign keys are enforced.
+        # 创建外键前先规范历史数据，避免旧记录导致约束创建失败
         conn.execute(
             """
             UPDATE tasks
@@ -751,7 +745,7 @@ class TasksStore:
             for index_name, columns in specs:
                 self._ensure_index(conn, table, index_name, columns)
 
-    def _modify_column_if_exists(self, conn: Any, table: str, column: str, definition: str) -> None:
+    def _modify_column_if_exists(self, conn: Any, table: str, column: str, definition: str) -> None:  # 字段存在时修改其 MySQL 类型定义
         row = conn.execute(
             """
             SELECT COLUMN_NAME AS name
@@ -763,7 +757,7 @@ class TasksStore:
         if row:
             conn.execute(f"ALTER TABLE {table} MODIFY COLUMN {column} {definition}")
 
-    def _ensure_index(self, conn: Any, table: str, index_name: str, columns: str) -> None:
+    def _ensure_index(self, conn: Any, table: str, index_name: str, columns: str) -> None:  # 确保某个业务查询需要的索引已经创建
         row = conn.execute(
             """
             SELECT INDEX_NAME AS name
@@ -785,7 +779,7 @@ class TasksStore:
         ref_table: str,
         ref_column: str,
         on_delete: str,
-    ) -> None:
+    ) -> None:  # 确保业务表之间的外键约束已经创建
         existing = conn.execute(
             """
             SELECT CONSTRAINT_NAME AS name
@@ -808,7 +802,7 @@ class TasksStore:
             """
         )
 
-    def _backfill_design_records(self) -> None:
+    def _backfill_design_records(self) -> None:  # 把旧任务 raw_json 中的请求信息补写到设计记录表
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -861,7 +855,7 @@ class TasksStore:
                 )
             conn.commit()
 
-    def upsert(self, task_id: str, status: NanoBananaTaskStatus, *, raw: dict[str, Any] | None = None, user_id: int | None = None) -> None:
+    def upsert(self, task_id: str, status: NanoBananaTaskStatus, *, raw: dict[str, Any] | None = None, user_id: int | None = None) -> None:  # 新增或更新任务基础状态、结果和原始响应数据
         now = int(time.time())
         raw_json = json.dumps(raw, ensure_ascii=False) if raw is not None else None
         with self._connect() as conn:
@@ -893,7 +887,7 @@ class TasksStore:
                 )
             conn.commit()
 
-    def attach_remote_task(self, task_id: str, remote_task_id: str, *, raw: dict[str, Any] | None = None) -> None:
+    def attach_remote_task(self, task_id: str, remote_task_id: str, *, raw: dict[str, Any] | None = None) -> None:  # 把本地任务编号与远程模型任务编号绑定
         now = int(time.time())
         raw_json = json.dumps(raw, ensure_ascii=False) if raw is not None else None
         with self._connect() as conn:
@@ -915,7 +909,7 @@ class TasksStore:
             )
             conn.commit()
 
-    def get_by_remote_task_id(self, remote_task_id: str) -> TaskRecord | None:
+    def get_by_remote_task_id(self, remote_task_id: str) -> TaskRecord | None:  # 根据远程任务编号反查本地任务记录
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM tasks WHERE remote_task_id=? LIMIT 1", (remote_task_id,)).fetchone()
         return self._row_to_task_record(row) if row else None
@@ -928,7 +922,7 @@ class TasksStore:
         result_image_url: str | None,
         error_message: str | None,
         raw: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> None:  # 更新任务的最终状态、结果图片和错误信息
         now = int(time.time())
         raw_json = json.dumps(raw, ensure_ascii=False) if raw is not None else None
         with self._connect() as conn:
@@ -943,12 +937,12 @@ class TasksStore:
             )
             conn.commit()
 
-    def get(self, task_id: str) -> TaskRecord | None:
+    def get(self, task_id: str) -> TaskRecord | None:  # 根据任务编号查询单条任务记录
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
         return self._row_to_task_record(row) if row else None
 
-    def list_recent(self, limit: int = 50, user_id: int | None = None) -> list[TaskRecord]:
+    def list_recent(self, limit: int = 50, user_id: int | None = None) -> list[TaskRecord]:  # 按用户维度查询最近提交的任务记录
         limit = max(1, min(limit, 200))
         params: list[object] = []
         where = ""
@@ -976,7 +970,7 @@ class TasksStore:
         result_image_url: str | None = None,
         error_message: str | None = None,
         user_id: int | None = None,
-    ) -> None:
+    ) -> None:  # 保存一次生成请求的空间、风格、图片和提示词参数
         now = int(time.time())
         draft_image_url = req.image_urls[0] if len(req.image_urls) >= 1 else None
         reference_image_url = req.image_urls[1] if len(req.image_urls) >= 2 else None
@@ -1073,7 +1067,7 @@ class TasksStore:
         status: NanoBananaTaskStatus,
         result_image_url: str | None,
         error_message: str | None,
-    ) -> None:
+    ) -> None:  # 同步更新设计记录中的生成结果和错误信息
         now = int(time.time())
         with self._connect() as conn:
             conn.execute(
@@ -1086,7 +1080,7 @@ class TasksStore:
             )
             conn.commit()
 
-    def get_design_record(self, task_id: str, user_id: int | None = None) -> DesignRecord | None:
+    def get_design_record(self, task_id: str, user_id: int | None = None) -> DesignRecord | None:  # 查询当前用户可访问的单条设计记录详情
         with self._connect() as conn:
             if user_id is None:
                 row = conn.execute("SELECT * FROM design_records WHERE task_id=?", (task_id,)).fetchone()
@@ -1094,7 +1088,7 @@ class TasksStore:
                 row = conn.execute("SELECT * FROM design_records WHERE task_id=? AND user_id=?", (task_id, user_id)).fetchone()
         return self._row_to_design_record(row) if row else None
 
-    def count_design_records(self, design_style: str | None = None, user_id: int | None = None) -> int:
+    def count_design_records(self, design_style: str | None = None, user_id: int | None = None) -> int:  # 按用户或风格条件统计设计记录数量
         sql = "SELECT COUNT(*) AS total FROM design_records"
         params: list[object] = []
         where: list[str] = []
@@ -1116,7 +1110,7 @@ class TasksStore:
         design_style: str | None = None,
         user_id: int | None = None,
         offset: int = 0,
-    ) -> list[DesignRecord]:
+    ) -> list[DesignRecord]:  # 按当前用户和筛选条件返回设计记录列表
         limit = max(1, min(limit, 200))
         offset = max(0, offset)
         sql = "SELECT * FROM design_records"
@@ -1142,7 +1136,7 @@ class TasksStore:
         feedback: DesignFeedbackRequest,
         *,
         user_id: int | None = None,
-    ) -> DesignRecord | None:
+    ) -> DesignRecord | None:  # 更新设计记录的评分、文字反馈和反馈时间
         now = int(time.time())
         with self._connect() as conn:
             if user_id is None:
@@ -1204,16 +1198,33 @@ class TasksStore:
             return None
         return self._row_to_design_record(row)
 
-    def delete_design_record(self, task_id: str, user_id: int | None = None) -> bool:
+    def delete_task(self, task_id: str, user_id: int | None = None) -> bool:  # 删除任务及其关联的设计记录、收藏、素材和统计数据
         with self._connect() as conn:
             if user_id is None:
-                cur = conn.execute("DELETE FROM design_records WHERE task_id=?", (task_id,))
+                fav_cur = conn.execute("DELETE FROM favorite_schemes WHERE task_id=?", (task_id,))
+                record_cur = conn.execute("DELETE FROM design_records WHERE task_id=?", (task_id,))
+                task_cur = conn.execute("DELETE FROM tasks WHERE task_id=?", (task_id,))
             else:
-                cur = conn.execute("DELETE FROM design_records WHERE task_id=? AND user_id=?", (task_id, user_id))
+                task_row = conn.execute(
+                    "SELECT 1 FROM tasks WHERE task_id=? AND (user_id=? OR user_id IS NULL) LIMIT 1",
+                    (task_id, user_id),
+                ).fetchone()
+                record_row = conn.execute(
+                    "SELECT 1 FROM design_records WHERE task_id=? AND (user_id=? OR user_id IS NULL) LIMIT 1",
+                    (task_id, user_id),
+                ).fetchone()
+                if not task_row and not record_row:
+                    return False
+                fav_cur = conn.execute("DELETE FROM favorite_schemes WHERE task_id=? AND (user_id=? OR user_id IS NULL)", (task_id, user_id))
+                record_cur = conn.execute("DELETE FROM design_records WHERE task_id=? AND (user_id=? OR user_id IS NULL)", (task_id, user_id))
+                task_cur = conn.execute("DELETE FROM tasks WHERE task_id=? AND (user_id=? OR user_id IS NULL)", (task_id, user_id))
             conn.commit()
-            return cur.rowcount > 0
+            return (fav_cur.rowcount + record_cur.rowcount + task_cur.rowcount) > 0
 
-    def admin_delete_design_record(self, task_id: str) -> bool:
+    def delete_design_record(self, task_id: str, user_id: int | None = None) -> bool:  # 删除当前用户自己的设计记录并清理缓存
+        return self.delete_task(task_id, user_id=user_id)
+
+    def admin_delete_design_record(self, task_id: str) -> bool:  # 管理员删除任意用户的设计记录并写入日志
         with self._connect() as conn:
             cur = conn.execute("DELETE FROM design_records WHERE task_id=?", (task_id,))
             conn.execute("DELETE FROM favorite_schemes WHERE task_id=?", (task_id,))
@@ -1221,7 +1232,7 @@ class TasksStore:
             conn.commit()
             return cur.rowcount > 0
 
-    def create_user(self, username: str, password_hash: str) -> UserProfile:
+    def create_user(self, username: str, password_hash: str) -> UserProfile:  # 向用户表写入新账号并返回用户资料
         now = int(time.time())
         role = "admin" if username == "admin" else "user"
         with self._connect() as conn:
@@ -1238,7 +1249,7 @@ class TasksStore:
             user_id = int(cur.lastrowid)
         return UserProfile(id=user_id, username=username, role=role, created_at=now)
 
-    def username_exists(self, username: str) -> bool:
+    def username_exists(self, username: str) -> bool:  # 判断指定用户名是否已经注册
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT 1 FROM users WHERE username=? LIMIT 1",
@@ -1246,7 +1257,7 @@ class TasksStore:
             ).fetchone()
         return row is not None
 
-    def get_user_by_username(self, username: str) -> tuple[UserProfile, str] | None:
+    def get_user_by_username(self, username: str) -> tuple[UserProfile, str] | None:  # 查询用户资料和密码哈希用于登录校验
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
         if not row:
@@ -1256,7 +1267,7 @@ class TasksStore:
             row["password_hash"],
         )
 
-    def create_session(self, token: str, user_id: int, expires_at: int | None = None) -> None:
+    def create_session(self, token: str, user_id: int, expires_at: int | None = None) -> None:  # 写入登录会话令牌和过期时间
         now = int(time.time())
         with self._connect() as conn:
             if self._mysql:
@@ -1273,7 +1284,7 @@ class TasksStore:
                 )
             conn.commit()
 
-    def get_user_by_token(self, token: str) -> UserProfile | None:
+    def get_user_by_token(self, token: str) -> UserProfile | None:  # 根据会话令牌查询对应用户，并清理过期会话
         now = int(time.time())
         with self._connect() as conn:
             row = conn.execute(
@@ -1289,12 +1300,12 @@ class TasksStore:
             return None
         return UserProfile(id=row["id"], username=row["username"], role=row["role"], created_at=row["created_at"])
 
-    def delete_session(self, token: str) -> None:
+    def delete_session(self, token: str) -> None:  # 删除指定登录令牌对应的会话
         with self._connect() as conn:
             conn.execute("DELETE FROM sessions WHERE token=?", (token,))
             conn.commit()
 
-    def save_favorite_scheme(self, user_id: int, scheme: FavoriteSchemeCreate) -> FavoriteScheme:
+    def save_favorite_scheme(self, user_id: int, scheme: FavoriteSchemeCreate) -> FavoriteScheme:  # 保存或更新用户收藏的设计方案
         now = int(time.time())
         with self._connect() as conn:
             if self._mysql:
@@ -1341,7 +1352,7 @@ class TasksStore:
             conn.commit()
         return self._row_to_favorite_scheme(row)
 
-    def list_favorite_schemes(self, user_id: int, limit: int = 50) -> list[FavoriteScheme]:
+    def list_favorite_schemes(self, user_id: int, limit: int = 50) -> list[FavoriteScheme]:  # 查询用户最近收藏的设计方案列表
         limit = max(1, min(limit, 200))
         with self._connect() as conn:
             rows = conn.execute(
@@ -1350,7 +1361,7 @@ class TasksStore:
             ).fetchall()
         return [self._row_to_favorite_scheme(row) for row in rows]
 
-    def delete_favorite_scheme(self, user_id: int, favorite_id: int) -> bool:
+    def delete_favorite_scheme(self, user_id: int, favorite_id: int) -> bool:  # 删除用户指定的收藏方案记录
         with self._connect() as conn:
             cur = conn.execute("DELETE FROM favorite_schemes WHERE id=? AND user_id=?", (favorite_id, user_id))
             conn.commit()
@@ -1369,7 +1380,7 @@ class TasksStore:
         duration_ms: int | None = None,
         request_path: str | None = None,
         ip_address: str | None = None,
-    ) -> None:
+    ) -> None:  # 写入一条系统运行或用户操作日志
         now = int(time.time())
         with self._connect() as conn:
             conn.execute(
@@ -1405,7 +1416,7 @@ class TasksStore:
         username: str | None = None,
         start_at: int | None = None,
         end_at: int | None = None,
-    ) -> list[SystemLog]:
+    ) -> list[SystemLog]:  # 按条件分页查询系统日志记录
         limit = max(1, min(limit, 300))
         filters: list[str] = []
         params: list[object] = []
@@ -1444,7 +1455,7 @@ class TasksStore:
         design_style: str | None = None,
         color_preference: str | None = None,
         status: int | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any]:  # 查询管理员后台所需的统计概览、用户列表和生成记录
         limit = max(1, min(limit, 300))
         offset = max(0, offset)
         filters: list[str] = []
@@ -1648,7 +1659,7 @@ class TasksStore:
             "recordsOffset": offset,
         }
 
-    def _row_to_system_log(self, row: Any) -> SystemLog:
+    def _row_to_system_log(self, row: Any) -> SystemLog:  # 把数据库日志行转换为 SystemLog 模型
         return SystemLog(
             id=row["id"],
             user_id=row["user_id"],
@@ -1664,7 +1675,7 @@ class TasksStore:
             created_at=row["created_at"],
         )
 
-    def _row_to_task_record(self, row: Any) -> TaskRecord:
+    def _row_to_task_record(self, row: Any) -> TaskRecord:  # 把数据库任务行转换为 TaskRecord 模型
         raw = json.loads(row["raw_json"]) if row["raw_json"] else None
         return TaskRecord(
             task_id=row["task_id"],
@@ -1676,7 +1687,7 @@ class TasksStore:
             raw=raw,
         )
 
-    def _row_to_favorite_scheme(self, row: Any) -> FavoriteScheme:
+    def _row_to_favorite_scheme(self, row: Any) -> FavoriteScheme:  # 把数据库收藏行转换为 FavoriteScheme 模型
         return FavoriteScheme(
             id=row["id"],
             user_id=row["user_id"],
@@ -1687,7 +1698,7 @@ class TasksStore:
             created_at=row["created_at"],
         )
 
-    def _row_to_design_record(self, row: Any) -> DesignRecord:
+    def _row_to_design_record(self, row: Any) -> DesignRecord:  # 把数据库设计记录行转换为 DesignRecord 模型
         return DesignRecord(
             task_id=row["task_id"],
             status=NanoBananaTaskStatus(int(row["status"])),

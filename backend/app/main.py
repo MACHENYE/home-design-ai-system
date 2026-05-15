@@ -43,32 +43,22 @@ from .models import (
     UserProfile,
     UserRegisterRequest,
 )
-from .mock_provider import make_demo_result, make_demo_task_id
 from .nanobanana_client import NanoBananaClient
 from .prompting import build_home_design_prompt
 from .settings import settings
 from .tasks_store import TasksStore
 
 
-def _default_callback_url() -> str:
+def _default_callback_url() -> str:  # 根据公网基础地址拼接 NanoBanana 异步回调地址
     return settings.public_base_url.rstrip("/") + "/api/v1/nanobanana/callback"
 
 
-def _active_provider() -> str:
-    provider = settings.ai_provider.lower().strip()
-    if provider == "auto":
-        return "nanobanana" if _has_nanobanana_key() else "mock"
-    if provider not in {"nanobanana", "mock"}:
-        raise HTTPException(status_code=500, detail=f"Unsupported AI_PROVIDER: {settings.ai_provider}")
-    return provider
-
-
-def _has_nanobanana_key() -> bool:
+def _has_nanobanana_key() -> bool:  # 检查 NanoBanana API Key 是否已经配置为可用值
     key = settings.nanobanana_api_key.strip()
     return bool(key and key.lower() not in {"replace_me", "your_api_key", "your_api_key_here"})
 
 
-def _safe_filename(name: str) -> str:
+def _safe_filename(name: str) -> str:  # 清洗用户上传文件名并追加随机后缀，避免路径注入和重名
     stem = Path(name).stem or "upload"
     suffix = Path(name).suffix.lower()
     stem = re.sub(r"[^a-zA-Z0-9_-]+", "-", stem).strip("-")[:40] or "upload"
@@ -77,7 +67,7 @@ def _safe_filename(name: str) -> str:
     return f"{stem}-{uuid.uuid4().hex[:10]}{suffix}"
 
 
-def _sftp_mkdirs(sftp: object, remote_dir: str) -> None:
+def _sftp_mkdirs(sftp: object, remote_dir: str) -> None:  # 在远程 SFTP 服务器上递归创建上传目录
     current = ""
     for part in PurePosixPath(remote_dir).parts:
         if part == "/":
@@ -90,7 +80,7 @@ def _sftp_mkdirs(sftp: object, remote_dir: str) -> None:
             sftp.mkdir(current)
 
 
-def _upload_file_to_remote(local_path: Path, filename: str) -> str:
+def _upload_file_to_remote(local_path: Path, filename: str) -> str:  # 通过 SFTP 将本地上传文件同步到公网服务器并返回访问 URL
     if not settings.remote_upload_host.strip():
         raise RuntimeError("REMOTE_UPLOAD_HOST is required when REMOTE_UPLOAD_ENABLED=true")
     if not settings.remote_upload_user.strip():
@@ -134,12 +124,7 @@ def _upload_file_to_remote(local_path: Path, filename: str) -> str:
 
     return f"{settings.remote_public_base_url.rstrip('/')}/{filename}"
 
-def _extract_task_id(resp: object) -> str | None:
-    """
-    NanoBanana responses seen in the wild vary:
-    - {"taskId": "..."}
-    - {"code": 200, "data": {"taskId": "..."}, ...}
-    """
+def _extract_task_id(resp: object) -> str | None:  # 兼容不同响应格式，从模型服务返回值中提取远程任务编号
     if not isinstance(resp, dict):
         return None
 
@@ -156,7 +141,7 @@ def _extract_task_id(resp: object) -> str | None:
     return None
 
 
-def _nanobanana_error_detail(resp: object) -> str:
+def _nanobanana_error_detail(resp: object) -> str:  # 把 NanoBanana 异常响应整理成便于排查的错误描述
     if not isinstance(resp, dict):
         return "Unexpected NanoBanana response (not a JSON object)"
 
@@ -174,7 +159,7 @@ def _nanobanana_error_detail(resp: object) -> str:
     return "; ".join(parts)
 
 
-def _parse_record_info(data: dict[str, object], rec: TaskRecord) -> tuple[NanoBananaTaskStatus, str | None, str | None]:
+def _parse_record_info(data: dict[str, object], rec: TaskRecord) -> tuple[NanoBananaTaskStatus, str | None, str | None]:  # 把远程任务详情转换为本地任务状态、结果图和错误信息
     status = rec.status
     success_flag = data.get("successFlag")
     error_code = data.get("errorCode")
@@ -324,7 +309,7 @@ STYLE_TEMPLATE_BANK = [
 ]
 
 
-def _add_recommendation_score(scores: dict[str, float], label: str | None, score: float) -> None:
+def _add_recommendation_score(scores: dict[str, float], label: str | None, score: float) -> None:  # 按照匹配规则为某个推荐标签累加权重分数
     if not label:
         return
     key = str(label).strip()
@@ -332,7 +317,7 @@ def _add_recommendation_score(scores: dict[str, float], label: str | None, score
         scores[key] = scores.get(key, 0.0) + score
 
 
-def _favorite_parts(favorite: FavoriteScheme) -> tuple[str | None, str | None, str | None, str | None]:
+def _favorite_parts(favorite: FavoriteScheme) -> tuple[str | None, str | None, str | None, str | None]:  # 从收藏方案标题和风格字段中拆分空间、风格、色彩和材质信息
     room = style = color = material = None
     if favorite.title and "·" in favorite.title:
         room_part, style_part = favorite.title.split("·", 1)
@@ -349,7 +334,7 @@ def _rank_style_templates(
     req: StyleTemplateRequest,
     records: list[DesignRecord],
     favorites: list[FavoriteScheme],
-) -> StyleTemplateResponse:
+) -> StyleTemplateResponse:  # 综合当前输入、历史记录和收藏偏好，对推荐模板进行排序
     room_scores: dict[str, float] = {}
     style_scores: dict[str, float] = {}
     color_scores: dict[str, float] = {}
@@ -431,7 +416,7 @@ def _rank_style_templates(
     return StyleTemplateResponse(templates=templates, summary=summary, source=source)
 
 
-def _default_style_templates_response(summary: str | None = None) -> StyleTemplateResponse:
+def _default_style_templates_response(summary: str | None = None) -> StyleTemplateResponse:  # 在大模型不可用时返回一组默认风格推荐模板
     return StyleTemplateResponse(
         templates=[
             StyleTemplate(
@@ -445,11 +430,11 @@ def _default_style_templates_response(summary: str | None = None) -> StyleTempla
     )
 
 
-def _bailian_api_key() -> str:
+def _bailian_api_key() -> str:  # 读取百炼或 DashScope 大模型接口密钥
     return settings.bailian_api_key.strip() or settings.dashscope_api_key.strip()
 
 
-def _bailian_error_summary(status_code: int | None = None, body: str | None = None) -> str:
+def _bailian_error_summary(status_code: int | None = None, body: str | None = None) -> str:  # 解析百炼接口错误响应并生成简洁失败原因
     message = ""
     if body:
         try:
@@ -471,7 +456,7 @@ def _bailian_error_summary(status_code: int | None = None, body: str | None = No
     return f"百炼请求失败，智能推荐暂不可用。{message}".strip()
 
 
-def _extract_response_text(payload: dict[str, object]) -> str:
+def _extract_response_text(payload: dict[str, object]) -> str:  # 从百炼普通响应结构中提取模型生成文本
     output_text = payload.get("output_text")
     if isinstance(output_text, str) and output_text.strip():
         return output_text.strip()
@@ -494,7 +479,7 @@ def _extract_response_text(payload: dict[str, object]) -> str:
     return "\n".join(texts).strip()
 
 
-def _extract_chat_completion_text(payload: dict[str, object]) -> str:
+def _extract_chat_completion_text(payload: dict[str, object]) -> str:  # 从兼容 Chat Completions 的响应结构中提取文本
     choices = payload.get("choices")
     if not isinstance(choices, list) or not choices:
         return ""
@@ -515,7 +500,7 @@ async def _bailian_text_completion(
     model: str | None = None,
     temperature: float = 0.45,
     max_tokens: int = 900,
-) -> str:
+) -> str:  # 调用百炼文本模型完成提示词优化或视觉推荐文本生成
     api_key = _bailian_api_key()
     if not api_key:
         raise HTTPException(status_code=400, detail="请在 backend/.env 中配置 BAILIAN_API_KEY 或 DASHSCOPE_API_KEY")
@@ -549,7 +534,7 @@ async def _bailian_text_completion(
     return text
 
 
-def _json_object_from_text(text: str) -> dict[str, object] | None:
+def _json_object_from_text(text: str) -> dict[str, object] | None:  # 从模型输出文本中截取并解析 JSON 对象
     if not text:
         return None
     cleaned = text.strip()
@@ -585,7 +570,7 @@ def _json_object_from_text(text: str) -> dict[str, object] | None:
     return None
 
 
-def _image_url_to_local_path(image_url: str) -> Path | None:
+def _image_url_to_local_path(image_url: str) -> Path | None:  # 将本系统上传图片 URL 反解为服务器本地文件路径
     parsed = urlparse(image_url)
     path = parsed.path or image_url
     if "/uploads/" not in path:
@@ -601,7 +586,7 @@ def _image_url_to_local_path(image_url: str) -> Path | None:
     return candidate if candidate.exists() else None
 
 
-async def _image_url_as_model_input(image_url: str) -> str:
+async def _image_url_as_model_input(image_url: str) -> str:  # 把图片 URL 转换为大模型可访问的公网地址或 base64 数据
     image_url = image_url.strip()
     if not image_url:
         raise ValueError("empty image url")
@@ -622,7 +607,7 @@ async def _image_url_as_model_input(image_url: str) -> str:
     raise ValueError("unsupported image url")
 
 
-def _coerce_vision_templates(data: dict[str, object], seed: int) -> list[StyleTemplate]:
+def _coerce_vision_templates(data: dict[str, object], seed: int) -> list[StyleTemplate]:  # 校验并清洗视觉模型返回的推荐模板列表
     raw_templates = data.get("templates")
     if not isinstance(raw_templates, list):
         return []
@@ -653,7 +638,7 @@ def _coerce_vision_templates(data: dict[str, object], seed: int) -> list[StyleTe
     return templates
 
 
-async def _vision_style_templates(req: StyleTemplateRequest) -> StyleTemplateResponse | None:
+async def _vision_style_templates(req: StyleTemplateRequest) -> StyleTemplateResponse | None:  # 调用视觉大模型识别图片并生成家装风格推荐模板
     if not settings.vision_recommendation_enabled:
         return None
     api_key = _bailian_api_key()
@@ -774,7 +759,7 @@ frontend_path = Path(settings.frontend_dir)
 frontend_static_path = frontend_path / "dist" if (frontend_path / "dist").exists() else frontend_path
 
 
-def _redis_client():
+def _redis_client():  # 按配置创建 Redis 客户端，失败时返回空以便降级运行
     if not settings.redis_url.strip():
         return None
     try:
@@ -791,7 +776,7 @@ redis_client = _redis_client()
 GENERATION_QUEUE_KEY = "home_design:generation_queue"
 
 
-def _cache_get_json(key: str) -> object | None:
+def _cache_get_json(key: str) -> object | None:  # 从 Redis 读取 JSON 缓存并反序列化为 Python 对象
     if not redis_client:
         return None
     try:
@@ -801,7 +786,7 @@ def _cache_get_json(key: str) -> object | None:
         return None
 
 
-def _cache_set_json(key: str, value: object, ttl: int) -> None:
+def _cache_set_json(key: str, value: object, ttl: int) -> None:  # 将可序列化对象写入 Redis 缓存并设置过期时间
     if not redis_client:
         return
     try:
@@ -810,7 +795,7 @@ def _cache_set_json(key: str, value: object, ttl: int) -> None:
         pass
 
 
-def _cache_delete_prefix(prefix: str) -> None:
+def _cache_delete_prefix(prefix: str) -> None:  # 删除指定前缀的 Redis 缓存键，用于数据变更后失效缓存
     if not redis_client:
         return
     try:
@@ -820,17 +805,17 @@ def _cache_delete_prefix(prefix: str) -> None:
         pass
 
 
-def _cache_key(prefix: str, payload: object) -> str:
+def _cache_key(prefix: str, payload: object) -> str:  # 根据业务前缀和请求参数生成稳定的 Redis 缓存键
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
     return f"{prefix}:{hashlib.sha256(raw.encode('utf-8')).hexdigest()}"
 
 
-def _invalidate_data_cache() -> None:
+def _invalidate_data_cache() -> None:  # 清理管理员统计和列表查询相关缓存
     _cache_delete_prefix("admin_dashboard:")
     _cache_delete_prefix("recommendations:")
 
 
-def _client_ip(request: Request | None) -> str | None:
+def _client_ip(request: Request | None) -> str | None:  # 从请求头或连接信息中提取客户端 IP 地址
     if request is None:
         return None
     forwarded = request.headers.get("x-forwarded-for")
@@ -850,7 +835,7 @@ def _log_event(
     message: str | None = None,
     duration_ms: int | None = None,
     request: Request | None = None,
-) -> None:
+) -> None:  # 写入接口操作、异常和耗时等系统日志
     try:
         store.add_system_log(
             action=action,
@@ -868,7 +853,7 @@ def _log_event(
         pass
 
 
-def _queue_generation_task(task_id: str) -> bool:
+def _queue_generation_task(task_id: str) -> bool:  # 把待生成任务写入 Redis 队列或内存队列
     if not redis_client or not settings.generation_queue_enabled:
         return False
     try:
@@ -878,7 +863,7 @@ def _queue_generation_task(task_id: str) -> bool:
         return False
 
 
-def _pop_generation_task() -> str | None:
+def _pop_generation_task() -> str | None:  # 从 Redis 队列或内存队列取出一个待处理任务
     if not redis_client:
         return None
     try:
@@ -891,13 +876,13 @@ def _pop_generation_task() -> str | None:
     return str(task_id)
 
 
-def _hash_password(password: str, salt: str | None = None) -> str:
+def _hash_password(password: str, salt: str | None = None) -> str:  # 对用户密码加盐后进行 SHA256 哈希保存
     salt = salt or secrets.token_hex(16)
     digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000)
     return f"pbkdf2_sha256${salt}${digest.hex()}"
 
 
-def _verify_password(password: str, stored_hash: str) -> bool:
+def _verify_password(password: str, stored_hash: str) -> bool:  # 校验用户输入密码与数据库中的哈希值是否一致
     try:
         algorithm, salt, expected = stored_hash.split("$", 2)
     except ValueError:
@@ -909,7 +894,7 @@ def _verify_password(password: str, stored_hash: str) -> bool:
 
 
 @app.middleware("http")
-async def system_log_middleware(request: Request, call_next):
+async def system_log_middleware(request: Request, call_next):  # 在每个请求前后记录耗时，并在异常时写入错误日志
     started = time.perf_counter()
     try:
         response = await call_next(request)
@@ -935,7 +920,7 @@ async def system_log_middleware(request: Request, call_next):
     return response
 
 
-def _extract_bearer_token(authorization: str | None) -> str | None:
+def _extract_bearer_token(authorization: str | None) -> str | None:  # 从 Authorization 请求头中提取 Bearer Token
     if not authorization:
         return None
     scheme, _, token = authorization.partition(" ")
@@ -944,7 +929,7 @@ def _extract_bearer_token(authorization: str | None) -> str | None:
     return token.strip()
 
 
-async def current_user(authorization: str | None = Header(default=None)) -> UserProfile:
+async def current_user(authorization: str | None = Header(default=None)) -> UserProfile:  # 根据请求令牌查询当前登录用户，未登录则返回 401
     token = _extract_bearer_token(authorization)
     if not token:
         raise HTTPException(status_code=401, detail="请先登录")
@@ -954,13 +939,13 @@ async def current_user(authorization: str | None = Header(default=None)) -> User
     return user
 
 
-async def require_admin(user: UserProfile = Depends(current_user)) -> UserProfile:
+async def require_admin(user: UserProfile = Depends(current_user)) -> UserProfile:  # 校验当前用户是否为管理员，不是管理员则拒绝访问
     if user.role != "admin":
         raise HTTPException(status_code=403, detail="只有 admin 用户可以访问管理后台")
     return user
 
 
-async def optional_user(authorization: str | None = Header(default=None)) -> UserProfile | None:
+async def optional_user(authorization: str | None = Header(default=None)) -> UserProfile | None:  # 尝试解析当前用户，允许未登录用户继续访问部分接口
     token = _extract_bearer_token(authorization)
     if not token:
         return None
@@ -968,12 +953,12 @@ async def optional_user(authorization: str | None = Header(default=None)) -> Use
 
 
 @app.get("/healthz")
-async def healthz() -> dict[str, str]:
-    return {"status": "ok", "provider": _active_provider()}
+async def healthz() -> dict[str, str]:  # 返回后端健康状态和当前模型服务商信息
+    return {"status": "ok", "provider": "nanobanana"}
 
 
 @app.post("/api/v1/auth/register", response_model=AuthResponse)
-async def register(req: UserRegisterRequest, request: Request) -> AuthResponse:
+async def register(req: UserRegisterRequest, request: Request) -> AuthResponse:  # 创建新用户账号并返回登录令牌
     username = req.username.strip()
     if store.username_exists(username):
         _log_event("auth_register_failed", level="warning", username=username, message="duplicate username", request=request)
@@ -991,7 +976,7 @@ async def register(req: UserRegisterRequest, request: Request) -> AuthResponse:
 
 
 @app.post("/api/v1/auth/login", response_model=AuthResponse)
-async def login(req: UserLoginRequest, request: Request) -> AuthResponse:
+async def login(req: UserLoginRequest, request: Request) -> AuthResponse:  # 校验用户账号密码并创建登录会话
     found = store.get_user_by_username(req.username.strip())
     if not found:
         _log_event("auth_login_failed", level="warning", username=req.username.strip(), message="username not found", request=request)
@@ -1007,12 +992,12 @@ async def login(req: UserLoginRequest, request: Request) -> AuthResponse:
 
 
 @app.get("/api/v1/auth/me", response_model=UserProfile)
-async def me(user: UserProfile = Depends(current_user)) -> UserProfile:
+async def me(user: UserProfile = Depends(current_user)) -> UserProfile:  # 返回当前登录用户的资料信息
     return user
 
 
 @app.post("/api/v1/auth/logout")
-async def logout(request: Request, authorization: str | None = Header(default=None)) -> dict[str, bool]:
+async def logout(request: Request, authorization: str | None = Header(default=None)) -> dict[str, bool]:  # 删除当前登录令牌对应的会话记录
     token = _extract_bearer_token(authorization)
     user = store.get_user_by_token(token) if token else None
     if token:
@@ -1022,12 +1007,12 @@ async def logout(request: Request, authorization: str | None = Header(default=No
 
 
 @app.get("/", response_model=None)
-async def index() -> RedirectResponse:
+async def index() -> RedirectResponse:  # 访问根路径时跳转到前端应用页面
     return RedirectResponse(url="/app/")
 
 
 @app.get("/api/v1/design/presets")
-async def design_presets() -> dict[str, list[str]]:
+async def design_presets() -> dict[str, list[str]]:  # 返回空间、风格、色彩和材质等前端下拉预设
     return {
         "roomTypes": ["客厅", "卧室", "厨房", "餐厅", "书房", "儿童房", "玄关", "卫生间"],
         "styles": ["现代简约", "新中式", "北欧", "中古风", "奶油风", "侘寂风", "工业风", "轻奢"],
@@ -1048,7 +1033,7 @@ async def admin_dashboard(
     color_preference: str | None = Query(default=None),
     status: int | None = Query(default=None),
     _user: UserProfile = Depends(require_admin),
-) -> dict[str, object]:
+) -> dict[str, object]:  # 查询管理员后台所需的统计概览、用户列表和生成记录
     key = _cache_key(
         "admin_dashboard",
         {
@@ -1090,7 +1075,7 @@ async def admin_system_logs(
     start_at: int | None = Query(default=None),
     end_at: int | None = Query(default=None),
     _user: UserProfile = Depends(require_admin),
-) -> list[SystemLog]:
+) -> list[SystemLog]:  # 分页返回管理员可查看的系统日志列表
     return store.list_system_logs(
         limit=limit,
         level=level,
@@ -1102,7 +1087,7 @@ async def admin_system_logs(
 
 
 @app.post("/api/v1/prompts/optimize", response_model=PromptOptimizeResponse)
-async def optimize_prompt(req: PromptOptimizeRequest, request: Request, user: UserProfile = Depends(current_user)) -> PromptOptimizeResponse:
+async def optimize_prompt(req: PromptOptimizeRequest, request: Request, user: UserProfile = Depends(current_user)) -> PromptOptimizeResponse:  # 调用文本模型把用户需求优化成更适合图像生成的提示词
     started = time.perf_counter()
     system_text = (
         "你是家装设计图生成系统的提示词优化助手。"
@@ -1139,7 +1124,7 @@ async def optimize_prompt(req: PromptOptimizeRequest, request: Request, user: Us
 async def upload_asset(
     request: Request,
     filename: str = Query(default="upload.png", min_length=1, max_length=160),
-) -> AssetUploadResponse:
+) -> AssetUploadResponse:  # 接收前端上传图片，保存本地或远程后返回访问地址
     content_type = request.headers.get("content-type", "")
     if content_type and not content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Only image uploads are supported")
@@ -1172,21 +1157,20 @@ async def upload_asset(
 
 
 @app.post("/api/v1/design/submit", response_model=SubmitResponse)
-async def submit(req: GenerateRequest, request: Request, user: UserProfile | None = Depends(optional_user)) -> SubmitResponse:
+async def submit(req: GenerateRequest, request: Request, user: UserProfile | None = Depends(optional_user)) -> SubmitResponse:  # 创建设计生成任务，保存请求参数并进入异步生成流程
     started = time.perf_counter()
-    provider = _active_provider()
     final_prompt = build_home_design_prompt(req)
 
-    if provider == "nanobanana" and not _has_nanobanana_key():
-        raise HTTPException(status_code=400, detail="NANOBANANA_API_KEY is required when AI_PROVIDER=nanobanana")
+    if not _has_nanobanana_key():
+        raise HTTPException(status_code=400, detail="NANOBANANA_API_KEY is required")
 
     callback_url = req.callback_url or _default_callback_url()
-    if provider == "nanobanana" and not callback_url.startswith("http"):
+    if not callback_url.startswith("http"):
         raise HTTPException(status_code=400, detail="callback_url must be an http(s) URL")
 
     task_id = f"local-{uuid.uuid4().hex}"
     raw = {
-        "provider": provider,
+        "provider": "nanobanana",
         "queue": {"status": "queued"},
         "request": req.model_dump(),
         "prompt": final_prompt,
@@ -1213,14 +1197,14 @@ async def submit(req: GenerateRequest, request: Request, user: UserProfile | Non
         user=user,
         target_type="task",
         target_id=task_id,
-        message=f"provider={provider}, queued={queued}",
+        message=f"provider=nanobanana, queued={queued}",
         duration_ms=int((time.perf_counter() - started) * 1000),
         request=request,
     )
     return SubmitResponse(task_id=task_id)
 
 
-async def _process_queued_generation(task_id: str) -> None:
+async def _process_queued_generation(task_id: str) -> None:  # 从数据库读取任务参数并执行一次实际图像生成
     started = time.perf_counter()
     rec = store.get(task_id)
     if not rec or rec.status in {NanoBananaTaskStatus.success, NanoBananaTaskStatus.failed}:
@@ -1228,7 +1212,6 @@ async def _process_queued_generation(task_id: str) -> None:
     raw = rec.raw or {}
     if raw.get("remote_task_id"):
         return
-    provider = str(raw.get("provider") or _active_provider())
     request_data = raw.get("request") if isinstance(raw.get("request"), dict) else {}
     try:
         req = GenerateRequest(**request_data)
@@ -1251,32 +1234,6 @@ async def _process_queued_generation(task_id: str) -> None:
         error_message=None,
     )
     _invalidate_data_cache()
-
-    if provider == "mock":
-        result_image_url = make_demo_result(req)
-        store.update_result(
-            task_id,
-            status=NanoBananaTaskStatus.success,
-            result_image_url=result_image_url,
-            error_message=None,
-            raw={**raw, "queue": {"status": "finished"}},
-        )
-        store.update_design_result(
-            task_id,
-            status=NanoBananaTaskStatus.success,
-            result_image_url=result_image_url,
-            error_message=None,
-        )
-        _invalidate_data_cache()
-        _log_event(
-            "design_generate_success",
-            username=(rec.raw or {}).get("username") if isinstance((rec.raw or {}).get("username"), str) else None,
-            target_type="task",
-            target_id=task_id,
-            message="mock provider finished",
-            duration_ms=int((time.perf_counter() - started) * 1000),
-        )
-        return
 
     try:
         remote_task_id, submit_resp = await _submit_nanobanana_generation(
@@ -1308,7 +1265,7 @@ async def _process_queued_generation(task_id: str) -> None:
     )
 
 
-def _mark_queued_generation_failed(task_id: str, message: str, raw: dict[str, object]) -> None:
+def _mark_queued_generation_failed(task_id: str, message: str, raw: dict[str, object]) -> None:  # 在队列任务失败时统一更新任务和设计记录状态
     store.update_result(
         task_id,
         status=NanoBananaTaskStatus.failed,
@@ -1330,7 +1287,7 @@ async def _submit_nanobanana_generation(
     req: GenerateRequest,
     final_prompt: str,
     callback_url: str,
-) -> tuple[str, dict[str, object]]:
+) -> tuple[str, dict[str, object]]:  # 按任务模式组装参数并提交给 NanoBanana 生成接口
     image_urls = list(req.image_urls)
     if req.mask_url:
         image_urls.append(req.mask_url)
@@ -1386,7 +1343,7 @@ async def _submit_nanobanana_generation(
     return task_id, resp
 
 
-async def _generation_queue_worker() -> None:
+async def _generation_queue_worker() -> None:  # 后台循环消费生成任务队列，保证任务异步处理
     while True:
         task_id = await run_in_threadpool(_pop_generation_task)
         if not task_id:
@@ -1400,13 +1357,13 @@ async def _generation_queue_worker() -> None:
 
 
 @app.on_event("startup")
-async def start_generation_queue_worker() -> None:
+async def start_generation_queue_worker() -> None:  # 应用启动时创建后台任务队列 worker
     if redis_client and settings.generation_queue_enabled:
         app.state.generation_queue_worker = asyncio.create_task(_generation_queue_worker())
 
 
 @app.on_event("shutdown")
-async def stop_generation_queue_worker() -> None:
+async def stop_generation_queue_worker() -> None:  # 应用关闭时停止后台任务队列 worker
     worker = getattr(app.state, "generation_queue_worker", None)
     if worker:
         worker.cancel()
@@ -1419,13 +1376,13 @@ async def list_design_records(
     offset: int = 0,
     design_style: str | None = None,
     user: UserProfile = Depends(current_user),
-) -> list[DesignRecord]:
+) -> list[DesignRecord]:  # 按当前用户和筛选条件返回设计记录列表
     response.headers["X-Total-Count"] = str(store.count_design_records(design_style=design_style, user_id=user.id))
     return store.list_design_records(limit=limit, offset=offset, design_style=design_style, user_id=user.id)
 
 
 @app.get("/api/v1/design/records/{task_id}", response_model=DesignRecord)
-async def get_design_record(task_id: str, user: UserProfile = Depends(current_user)) -> DesignRecord:
+async def get_design_record(task_id: str, user: UserProfile = Depends(current_user)) -> DesignRecord:  # 查询当前用户可访问的单条设计记录详情
     rec = store.get_design_record(task_id, user_id=user.id)
     if not rec:
         raise HTTPException(status_code=404, detail="design record not found")
@@ -1437,7 +1394,7 @@ async def save_design_feedback(
     task_id: str,
     feedback: DesignFeedbackRequest,
     user: UserProfile = Depends(current_user),
-) -> DesignRecord:
+) -> DesignRecord:  # 保存用户对生成方案的多维评分和文字反馈
     rec = store.update_design_feedback(task_id, feedback, user_id=user.id)
     if not rec:
         raise HTTPException(status_code=404, detail="design record not found")
@@ -1447,7 +1404,7 @@ async def save_design_feedback(
 
 
 @app.delete("/api/v1/design/records/{task_id}")
-async def delete_design_record(task_id: str, user: UserProfile = Depends(current_user)) -> dict[str, bool]:
+async def delete_design_record(task_id: str, user: UserProfile = Depends(current_user)) -> dict[str, bool]:  # 删除当前用户自己的设计记录并清理缓存
     deleted = store.delete_design_record(task_id, user_id=user.id)
     if not deleted:
         raise HTTPException(status_code=404, detail="design record not found")
@@ -1456,8 +1413,18 @@ async def delete_design_record(task_id: str, user: UserProfile = Depends(current
     return {"deleted": True}
 
 
+@app.delete("/api/v1/tasks/{task_id}")
+async def delete_task(task_id: str, user: UserProfile = Depends(current_user)) -> dict[str, bool]:  # 删除当前用户自己的任务记录，兼容没有设计详情的孤儿任务
+    deleted = store.delete_task(task_id, user_id=user.id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="task not found")
+    _invalidate_data_cache()
+    _log_event("task_deleted", user=user, target_type="task", target_id=task_id, message="user deleted task")
+    return {"deleted": True}
+
+
 @app.delete("/api/v1/admin/design/records/{task_id}")
-async def admin_delete_design_record(task_id: str, user: UserProfile = Depends(require_admin)) -> dict[str, bool]:
+async def admin_delete_design_record(task_id: str, user: UserProfile = Depends(require_admin)) -> dict[str, bool]:  # 管理员删除任意用户的设计记录并写入日志
     deleted = store.admin_delete_design_record(task_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="design record not found")
@@ -1467,12 +1434,12 @@ async def admin_delete_design_record(task_id: str, user: UserProfile = Depends(r
 
 
 @app.get("/api/v1/favorites", response_model=list[FavoriteScheme])
-async def list_favorites(limit: int = 50, user: UserProfile = Depends(current_user)) -> list[FavoriteScheme]:
+async def list_favorites(limit: int = 50, user: UserProfile = Depends(current_user)) -> list[FavoriteScheme]:  # 返回当前用户收藏的设计方案列表
     return store.list_favorite_schemes(user.id, limit=limit)
 
 
 @app.post("/api/v1/favorites", response_model=FavoriteScheme)
-async def save_favorite(scheme: FavoriteSchemeCreate, user: UserProfile = Depends(current_user)) -> FavoriteScheme:
+async def save_favorite(scheme: FavoriteSchemeCreate, user: UserProfile = Depends(current_user)) -> FavoriteScheme:  # 保存当前用户提交的收藏方案
     saved = store.save_favorite_scheme(user.id, scheme)
     _invalidate_data_cache()
     _log_event("favorite_saved", user=user, target_type="favorite", target_id=str(saved.id), message=saved.task_id or saved.title)
@@ -1480,7 +1447,7 @@ async def save_favorite(scheme: FavoriteSchemeCreate, user: UserProfile = Depend
 
 
 @app.delete("/api/v1/favorites/{favorite_id}")
-async def delete_favorite(favorite_id: int, user: UserProfile = Depends(current_user)) -> dict[str, bool]:
+async def delete_favorite(favorite_id: int, user: UserProfile = Depends(current_user)) -> dict[str, bool]:  # 删除当前用户指定的收藏方案
     deleted = store.delete_favorite_scheme(user.id, favorite_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="favorite not found")
@@ -1493,7 +1460,7 @@ async def delete_favorite(favorite_id: int, user: UserProfile = Depends(current_
 async def recommend_style_templates(
     req: StyleTemplateRequest,
     _user: UserProfile = Depends(current_user),
-) -> StyleTemplateResponse:
+) -> StyleTemplateResponse:  # 结合图片理解、历史数据和默认模板生成风格推荐
     key = _cache_key("recommendations", req.model_dump())
     cached = _cache_get_json(key)
     if isinstance(cached, dict):
@@ -1508,12 +1475,12 @@ async def recommend_style_templates(
 
 
 @app.get("/api/v1/tasks", response_model=list[TaskRecord])
-async def list_tasks(limit: int = 50, user: UserProfile = Depends(current_user)) -> list[TaskRecord]:
+async def list_tasks(limit: int = 50, user: UserProfile = Depends(current_user)) -> list[TaskRecord]:  # 返回当前用户最近提交的生成任务列表
     return store.list_recent(limit, user_id=user.id)
 
 
 @app.get("/api/v1/tasks/{task_id}", response_model=TaskRecord)
-async def get_task(task_id: str) -> TaskRecord:
+async def get_task(task_id: str) -> TaskRecord:  # 根据任务编号返回任务当前状态和结果
     rec = store.get(task_id)
     if not rec:
         raise HTTPException(status_code=404, detail="task not found")
@@ -1521,7 +1488,7 @@ async def get_task(task_id: str) -> TaskRecord:
 
 
 @app.post("/api/v1/tasks/{task_id}/refresh", response_model=TaskRecord)
-async def refresh_task(task_id: str) -> TaskRecord:
+async def refresh_task(task_id: str) -> TaskRecord:  # 主动查询远程任务状态并同步更新本地记录
     rec = store.get(task_id)
     if not rec:
         raise HTTPException(status_code=404, detail="task not found")
@@ -1550,7 +1517,7 @@ async def refresh_task(task_id: str) -> TaskRecord:
 
 
 @app.post("/api/v1/nanobanana/callback")
-async def nanobanana_callback(cb: dict[str, object]) -> dict[str, str]:
+async def nanobanana_callback(cb: dict[str, object]) -> dict[str, str]:  # 接收 NanoBanana 异步回调并更新任务结果
     data = cb.get("data") if isinstance(cb.get("data"), dict) else {}
     info = data.get("info") if isinstance(data.get("info"), dict) else {}
     task_id = cb.get("taskId") or data.get("taskId")

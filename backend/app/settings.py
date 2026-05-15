@@ -7,14 +7,12 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 PROJECT_DIR = BACKEND_DIR.parent
 
 
-class Settings(BaseSettings):
+class Settings(BaseSettings):  # 集中读取后端运行所需的环境变量和默认配置，包括数据库、模型服务、上传和缓存参数
     model_config = SettingsConfigDict(
         env_file=(BACKEND_DIR / ".env", PROJECT_DIR / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
-
-    ai_provider: str = "auto"
 
     nanobanana_api_key: str = ""
     nanobanana_base_url: str = "https://api.nanobananaapi.ai/api/v1/nanobanana"
@@ -41,7 +39,7 @@ class Settings(BaseSettings):
     remote_public_base_url: str = ""
     remote_upload_timeout_s: float = 20.0
 
-    # Optional visual recommendation through Alibaba Cloud Model Studio (Bailian).
+    # 可选的阿里云百炼视觉推荐配置
     vision_recommendation_enabled: bool = False
     bailian_api_key: str = ""
     dashscope_api_key: str = ""
@@ -50,7 +48,7 @@ class Settings(BaseSettings):
     bailian_text_model: str = "qwen-plus"
     bailian_timeout_s: float = 35.0
 
-    # Legacy OpenAI names are kept so old .env files do not fail to load.
+    # 保留旧版 OpenAI 配置名，避免历史 .env 文件加载失败
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
     vision_recommendation_model: str = "gpt-4.1-mini"
