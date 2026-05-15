@@ -309,113 +309,6 @@ STYLE_TEMPLATE_BANK = [
 ]
 
 
-def _add_recommendation_score(scores: dict[str, float], label: str | None, score: float) -> None:  # 按照匹配规则为某个推荐标签累加权重分数
-    if not label:
-        return
-    key = str(label).strip()
-    if key:
-        scores[key] = scores.get(key, 0.0) + score
-
-
-def _favorite_parts(favorite: FavoriteScheme) -> tuple[str | None, str | None, str | None, str | None]:  # 从收藏方案标题和风格字段中拆分空间、风格、色彩和材质信息
-    room = style = color = material = None
-    if favorite.title and "·" in favorite.title:
-        room_part, style_part = favorite.title.split("·", 1)
-        room = room_part.strip() or None
-        style = style_part.strip() or None
-    if favorite.style and "/" in favorite.style:
-        color_part, material_part = favorite.style.split("/", 1)
-        color = color_part.strip() or None
-        material = material_part.strip() or None
-    return room, style, color, material
-
-
-def _rank_style_templates(
-    req: StyleTemplateRequest,
-    records: list[DesignRecord],
-    favorites: list[FavoriteScheme],
-) -> StyleTemplateResponse:  # 综合当前输入、历史记录和收藏偏好，对推荐模板进行排序
-    room_scores: dict[str, float] = {}
-    style_scores: dict[str, float] = {}
-    color_scores: dict[str, float] = {}
-    material_scores: dict[str, float] = {}
-    favorite_task_ids = {item.task_id for item in favorites if item.task_id}
-
-    for record in records:
-        weight = 1.0
-        if record.task_id in favorite_task_ids:
-            weight += 1.4
-        if record.result_image_url:
-            weight += 0.25
-        _add_recommendation_score(room_scores, record.room_type, weight * 0.32)
-        _add_recommendation_score(style_scores, record.design_style, weight * 0.42)
-        _add_recommendation_score(color_scores, record.color_preference, weight * 0.28)
-        _add_recommendation_score(material_scores, record.material_preference, weight * 0.24)
-
-    for favorite in favorites:
-        room, style, color, material = _favorite_parts(favorite)
-        _add_recommendation_score(room_scores, room, 0.9)
-        _add_recommendation_score(style_scores, style, 1.2)
-        _add_recommendation_score(color_scores, color, 0.8)
-        _add_recommendation_score(material_scores, material, 0.7)
-
-    _add_recommendation_score(room_scores, req.room_type, 0.65)
-    _add_recommendation_score(style_scores, req.design_style, 0.35)
-    _add_recommendation_score(color_scores, req.color_preference, 0.25)
-    _add_recommendation_score(material_scores, req.material_preference, 0.25)
-
-    seed = abs(int(req.refresh_seed or 0))
-    rotated = STYLE_TEMPLATE_BANK[seed % len(STYLE_TEMPLATE_BANK) :] + STYLE_TEMPLATE_BANK[: seed % len(STYLE_TEMPLATE_BANK)]
-    ranked: list[tuple[float, dict[str, str]]] = []
-    for index, template in enumerate(rotated):
-        score = 0.0
-        score += room_scores.get(template["room"], 0.0) * 1.05
-        score += style_scores.get(template["style"], 0.0) * 1.25
-        score += color_scores.get(template["color"], 0.0) * 0.85
-        score += material_scores.get(template["material"], 0.0) * 0.75
-        score += max(0, 0.16 - index * 0.01)
-        ranked.append((score, template))
-
-    ranked.sort(key=lambda item: item[0], reverse=True)
-    selected: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for _, template in ranked:
-        if template["name"] in seen:
-            continue
-        selected.append(template)
-        seen.add(template["name"])
-        if len(selected) == 4:
-            break
-
-    if len(selected) < 4:
-        for template in rotated:
-            if template["name"] not in seen:
-                selected.append(template)
-                seen.add(template["name"])
-            if len(selected) == 4:
-                break
-
-    templates = [StyleTemplate(**item) for item in selected]
-    for template in templates:
-        reasons: list[str] = []
-        if room_scores.get(template.room, 0) > 0:
-            reasons.append(f"空间偏好接近「{template.room}」")
-        if style_scores.get(template.style, 0) > 0:
-            reasons.append(f"历史或收藏中常见「{template.style}」")
-        if color_scores.get(template.color, 0) > 0:
-            reasons.append(f"配色偏好接近「{template.color}」")
-        if not reasons:
-            reasons.append(f"作为「{template.style}」方向的通用备选")
-        template.reason = "；".join(reasons[:2]) + "。"
-    source = "history" if records or favorites else "default"
-    summary = (
-        f"已根据 {len(records)} 条历史记录和 {len(favorites)} 个收藏方案推荐模板。"
-        if source == "history"
-        else "暂无历史偏好，已提供通用风格模板。"
-    )
-    return StyleTemplateResponse(templates=templates, summary=summary, source=source)
-
-
 def _default_style_templates_response(summary: str | None = None) -> StyleTemplateResponse:  # 在大模型不可用时返回一组默认风格推荐模板
     return StyleTemplateResponse(
         templates=[
@@ -425,7 +318,7 @@ def _default_style_templates_response(summary: str | None = None) -> StyleTempla
             )
             for item in STYLE_TEMPLATE_BANK[:4]
         ],
-        summary=summary or "请上传底稿或参考图后点击智能推荐，由大模型生成图片相关模板。",
+        summary=summary or "请上传底稿后点击智能推荐，由多模态大模型生成图片相关模板。",
         source="default",
     )
 
@@ -1460,7 +1353,7 @@ async def delete_favorite(favorite_id: int, user: UserProfile = Depends(current_
 async def recommend_style_templates(
     req: StyleTemplateRequest,
     _user: UserProfile = Depends(current_user),
-) -> StyleTemplateResponse:  # 结合图片理解、历史数据和默认模板生成风格推荐
+) -> StyleTemplateResponse:  # 结合图片理解和默认模板生成风格推荐
     key = _cache_key("recommendations", req.model_dump())
     cached = _cache_get_json(key)
     if isinstance(cached, dict):

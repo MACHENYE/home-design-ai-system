@@ -192,7 +192,7 @@ class StyleTemplateRequest(BaseModel):  # 请求智能推荐风格模板时使�
 class StyleTemplateResponse(BaseModel):  # 智能推荐接口返回模板列表和说明信息的模型
     templates: list[StyleTemplate] = Field(default_factory=list)
     summary: str | None = None
-    source: str = "history"
+    source: str = "vision"
 
 
 class PromptOptimizeRequest(BaseModel):  # 请求优化提示词时使用的输入模型

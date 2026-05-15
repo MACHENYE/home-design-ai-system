@@ -47,6 +47,7 @@
             @append-prompt="appendPrompt"
             @refresh-style-templates="refreshStyleTemplates"
             @optimize-prompt="optimizePrompt"
+            @clear-draft="resetDraftInputs"
             @submit-design="submitDesign"
             @update:brush-size="brushSize = $event"
             @update:mask-dirty="maskDirty = $event"
@@ -174,6 +175,23 @@ const quickPresets = [
 ];
 
 const initialQuickPresets = quickPresets.map((item) => ({ ...item }));
+const defaultRecommendationHint = "上传底稿后，可由大模型识别图片并生成4个提示词模板";
+
+const createDefaultForm = () => ({
+  mode: "basic",
+  prompt: "保留原户型结构，生成一个明亮、真实、适合年轻家庭居住的客厅方案。",
+  image_urls: [],
+  room_type: "客厅",
+  design_style: "现代简约",
+  color_preference: "暖白+原木",
+  material_preference: "原木",
+  keep_structure: true,
+  mask_url: null,
+  negative_prompt: "不要改变门窗位置，不要生成不合理家具比例",
+  resolution: "1K",
+  aspect_ratio: "16:9",
+  output_format: "png",
+});
 
 const promptChips = [
   "增强自然采光",
@@ -224,7 +242,7 @@ export default {
       compareMode: "draft-result",
       compareSlider: 52,
       presets: { ...defaultPresets },
-      quickPresets,
+      quickPresets: initialQuickPresets.map((item) => ({ ...item })),
       promptChips,
       aspectRatios,
       draftAsset: null,
@@ -251,7 +269,7 @@ export default {
       promptOptimizing: false,
       feedbackSubmitting: false,
       recommendationLoading: false,
-      recommendationHint: "上传底稿后，可由大模型识别图片并生成4个提示词模板",
+      recommendationHint: defaultRecommendationHint,
       recommendationActive: false,
       activePresetName: "",
       styleTemplateSeed: 0,
@@ -276,21 +294,7 @@ export default {
         clientType: "年轻家庭",
         notes: "重点关注客厅采光、动线顺畅和儿童活动区域安全感。",
       },
-      form: {
-        mode: "basic",
-        prompt: "保留原户型结构，生成一个明亮、真实、适合年轻家庭居住的客厅方案。",
-        image_urls: [],
-        room_type: "客厅",
-        design_style: "现代简约",
-        color_preference: "暖白+原木",
-        material_preference: "原木",
-        keep_structure: true,
-        mask_url: null,
-        negative_prompt: "不要改变门窗位置，不要生成不合理家具比例",
-        resolution: "1K",
-        aspect_ratio: "16:9",
-        output_format: "png",
-      },
+      form: createDefaultForm(),
     };
   },
 
@@ -741,7 +745,7 @@ export default {
       this.quickPresets = initialQuickPresets.map((item) => ({ ...item }));
       this.recommendationActive = false;
       this.activePresetName = "";
-      this.recommendationHint = "已更新上传图片，点击智能推荐生成新的提示词模板";
+      this.recommendationHint = "点击智能推荐生成新的提示词模板";
       if (type === "draft") {
         this.draftAsset = asset;
         this.draftPreview = previewUrl;
@@ -1051,6 +1055,22 @@ export default {
       this.draftPreview = "";
       this.draftState = "未上传";
       this.clearMask();
+    },
+
+    // Restore the left-side design inputs to their default state.
+    resetDraftInputs() {
+      this.prepareNewDesignView();
+      this.clearInputAssets();
+      this.form = createDefaultForm();
+      this.quickPresets = initialQuickPresets.map((item) => ({ ...item }));
+      this.activePresetName = "";
+      this.recommendationActive = false;
+      this.recommendationHint = defaultRecommendationHint;
+      this.brushSize = 28;
+      this.maskDirty = false;
+      this.maskState = "未绘制";
+      nextTick(() => this.setupCanvas());
+      ElMessage.success("已清空并恢复默认设置");
     },
 
     // Build the result download filename.

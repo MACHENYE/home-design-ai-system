@@ -1,10 +1,11 @@
 <template>
   <section class="panel control-panel">
-    <div class="panel-head">
+    <div class="panel-head upload-head">
       <div>
         <span class="eyebrow">1. 输入素材</span>
         <h2>上传底稿</h2>
       </div>
+      <el-button class="clear-draft-button" size="small" plain @click="$emit('clear-draft')">清空</el-button>
     </div>
 
     <div class="upload-grid">
@@ -233,6 +234,7 @@ export default {
     "append-prompt",
     "refresh-style-templates",
     "optimize-prompt",
+    "clear-draft",
     "submit-design",
     "update:brushSize",
     "update:maskDirty",
