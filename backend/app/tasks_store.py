@@ -168,7 +168,6 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
                   cultural_element TEXT NULL,
                   keep_structure INTEGER NOT NULL,
                   draft_image_url TEXT NULL,
-                  reference_image_url TEXT NULL,
                   mask_url TEXT NULL,
                   result_image_url TEXT NULL,
                   error_message TEXT NULL,
@@ -326,6 +325,7 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
             self._ensure_column(conn, "design_iterations", "room_type", "VARCHAR(80) NULL")
             self._ensure_column(conn, "design_iterations", "design_style", "VARCHAR(80) NULL")
             self._remove_project_room_tables(conn)
+            self._remove_reference_image_column(conn)
             self._normalize_mysql_schema(conn)
             if not self._mysql:
                 conn.execute("DROP INDEX IF EXISTS idx_users_username_lower")
@@ -482,7 +482,6 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
 
                 assets = [
                     ("draft", row.get("draft_image_url"), "upload"),
-                    ("reference", row.get("reference_image_url"), "upload"),
                     ("mask", row.get("mask_url"), "mask"),
                     ("result", row.get("result_image_url"), "generation"),
                 ]
@@ -581,6 +580,12 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
         self._drop_column_if_exists(conn, "design_iterations", "room_id")
         conn.execute("DROP TABLE IF EXISTS project_rooms")
         conn.execute("DROP TABLE IF EXISTS design_projects")
+
+    def _remove_reference_image_column(self, conn: Any) -> None:  # 清理已废弃的风格参考图字段和素材记录
+        if not self._mysql:
+            return
+        self._drop_column_if_exists(conn, "design_records", "reference_image_url")
+        conn.execute("DELETE FROM design_assets WHERE asset_type='reference'")
 
     def _normalize_mysql_schema(self, conn: Any) -> None:  # 统一 MySQL 字段类型、历史数据、外键和索引结构
         if not self._mysql:
@@ -824,10 +829,10 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
                     INSERT {ignore_clause} INTO design_records (
                       task_id, status, prompt, negative_prompt, room_type, design_style,
                       color_preference, material_preference, budget_level, cultural_element,
-                      keep_structure, draft_image_url, reference_image_url, mask_url,
-                      result_image_url, error_message, created_at, updated_at, user_id
+                      keep_structure, draft_image_url, mask_url, result_image_url,
+                      error_message, created_at, updated_at, user_id
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """.format(ignore_clause="IGNORE" if self._mysql else "OR IGNORE")
                 conn.execute(
                     insert_sql,
@@ -844,7 +849,6 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
                         request.get("cultural_element"),
                         1 if request.get("keep_structure", True) else 0,
                         image_urls[0] if len(image_urls) >= 1 else None,
-                        image_urls[1] if len(image_urls) >= 2 else None,
                         request.get("mask_url"),
                         row["result_image_url"],
                         row["error_message"],
@@ -973,7 +977,6 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
     ) -> None:  # 保存一次生成请求的空间、风格、图片和提示词参数
         now = int(time.time())
         draft_image_url = req.image_urls[0] if len(req.image_urls) >= 1 else None
-        reference_image_url = req.image_urls[1] if len(req.image_urls) >= 2 else None
         with self._connect() as conn:
             params = (
                 task_id,
@@ -988,7 +991,6 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
                 req.cultural_element,
                 1 if req.keep_structure else 0,
                 draft_image_url,
-                reference_image_url,
                 req.mask_url,
                 result_image_url,
                 error_message,
@@ -1002,10 +1004,10 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
                     INSERT INTO design_records (
                       task_id, status, prompt, negative_prompt, room_type, design_style,
                       color_preference, material_preference, budget_level, cultural_element,
-                      keep_structure, draft_image_url, reference_image_url, mask_url,
-                      result_image_url, error_message, created_at, updated_at, user_id
+                      keep_structure, draft_image_url, mask_url, result_image_url,
+                      error_message, created_at, updated_at, user_id
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON DUPLICATE KEY UPDATE
                       user_id=COALESCE(VALUES(user_id), user_id),
                       status=VALUES(status),
@@ -1019,7 +1021,6 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
                       cultural_element=VALUES(cultural_element),
                       keep_structure=VALUES(keep_structure),
                       draft_image_url=VALUES(draft_image_url),
-                      reference_image_url=VALUES(reference_image_url),
                       mask_url=VALUES(mask_url),
                       result_image_url=COALESCE(VALUES(result_image_url), result_image_url),
                       error_message=VALUES(error_message),
@@ -1033,10 +1034,10 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
                     INSERT INTO design_records (
                       task_id, status, prompt, negative_prompt, room_type, design_style,
                       color_preference, material_preference, budget_level, cultural_element,
-                      keep_structure, draft_image_url, reference_image_url, mask_url,
-                      result_image_url, error_message, created_at, updated_at, user_id
+                      keep_structure, draft_image_url, mask_url, result_image_url,
+                      error_message, created_at, updated_at, user_id
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(task_id) DO UPDATE SET
                       user_id=COALESCE(excluded.user_id, design_records.user_id),
                       status=excluded.status,
@@ -1050,7 +1051,6 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
                       cultural_element=excluded.cultural_element,
                       keep_structure=excluded.keep_structure,
                       draft_image_url=excluded.draft_image_url,
-                      reference_image_url=excluded.reference_image_url,
                       mask_url=excluded.mask_url,
                       result_image_url=COALESCE(excluded.result_image_url, design_records.result_image_url),
                       error_message=excluded.error_message,
@@ -1712,7 +1712,6 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
             cultural_element=row["cultural_element"],
             keep_structure=bool(row["keep_structure"]),
             draft_image_url=row["draft_image_url"],
-            reference_image_url=row["reference_image_url"],
             mask_url=row["mask_url"],
             result_image_url=row["result_image_url"],
             error_message=row["error_message"],

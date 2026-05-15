@@ -548,7 +548,7 @@ async def _vision_style_templates(req: StyleTemplateRequest) -> StyleTemplateRes
             model_image_url = await _image_url_as_model_input(image_url)
         except (OSError, ValueError):
             continue
-        label = "设计底稿" if index == 0 else "风格参考图"
+        label = "设计底稿" if index == 0 else "补充图片"
         content_parts.append({"type": "text", "text": f"{label}：请重点识别这张图的空间类型、家具、材质、采光和可保留结构。"})
         content_parts.append({"type": "image_url", "image_url": {"url": model_image_url}})
     if not content_parts:
