@@ -42,6 +42,7 @@
             :recommendation-hint="recommendationHint"
             :recommendation-active="recommendationActive"
             :prompt-optimizing="promptOptimizing"
+            :design-notes="designNotes"
             @handle-file="handleFile"
             @apply-quick-preset="applyQuickPreset"
             @append-prompt="appendPrompt"
@@ -49,6 +50,9 @@
             @optimize-prompt="optimizePrompt"
             @clear-draft="resetDraftInputs"
             @submit-design="submitDesign"
+            @add-design-note="addDesignNote"
+            @remove-design-note="removeDesignNote"
+            @clear-design-notes="clearDesignNotes"
             @update:brush-size="brushSize = $event"
             @update:mask-dirty="maskDirty = $event"
             @update:mask-state="maskState = $event"
@@ -82,6 +86,8 @@
             @update:record-style-filter="recordStyleFilter = $event"
             @load-design-records="loadDesignRecords"
             @open-history="openHistory"
+            @continue-edit="continueEditFromResult"
+            @cancel-current-task="cancelCurrentTask"
           />
         </main>
 
@@ -251,6 +257,8 @@ export default {
       maskState: "未绘制",
       maskDirty: false,
       brushSize: 28,
+      designNotes: [],
+      continueSourceTaskId: "",
       submitting: false,
       currentTaskId: "",
       generatingTaskId: "",
@@ -399,7 +407,7 @@ export default {
 
     // Check whether generation is in progress.
     isGenerating() {
-      return this.submitting || (Boolean(this.generatingTaskId) && !this.taskStateText.includes("失败"));
+      return this.submitting || Boolean(this.generatingTaskId);
     },
 
     // Build the current insight indicators.
@@ -543,6 +551,9 @@ export default {
       this.currentUser = null;
       this.currentTaskId = "";
       this.generatingTaskId = "";
+      this.pollingTaskId = "";
+      this.continueSourceTaskId = "";
+      this.designNotes = [];
       this.taskStateText = "等待提交";
       this.resultImage = "";
       this.history = [];
@@ -761,6 +772,8 @@ export default {
       this.pollTickCount = 0;
       this.generatingTaskId = "";
       this.currentTaskId = "";
+      this.continueSourceTaskId = "";
+      this.designNotes = [];
       this.selectedHistoryTaskId = "";
       this.selectedRecord = null;
       this.selectedSavedSchemeId = "";
@@ -802,6 +815,40 @@ export default {
     // Convert the mask canvas to a blob.
     canvasToBlob() {
       return this.$refs.controlPanelRef?.canvasToBlob?.();
+    },
+
+    // Add a numbered mask note.
+    addDesignNote(note) {
+      const nextNo = this.designNotes.length ? Math.max(...this.designNotes.map((item) => Number(item.no) || 0)) + 1 : 1;
+      this.designNotes = [
+        ...this.designNotes,
+        {
+          no: nextNo,
+          x: Number(note.x || 0),
+          y: Number(note.y || 0),
+          type: "mask",
+          text: String(note.text || "").trim(),
+        },
+      ];
+    },
+
+    // Remove a design note.
+    removeDesignNote(no) {
+      this.designNotes = this.designNotes.filter((item) => item.no !== no);
+    },
+
+    // Clear all design notes.
+    clearDesignNotes() {
+      this.designNotes = [];
+    },
+
+    // Convert mask notes to prompt text.
+    designNotesText() {
+      if (!this.designNotes.length) return "";
+      const lines = this.designNotes.map((item) => {
+        return `${item.no}. ${item.text}`;
+      });
+      return `掩码区域修改要求：${lines.join("；")}。以上要求只作用于黑色掩码覆盖区域，未遮罩区域保持不变。`;
     },
 
     // Append text to the prompt.
@@ -947,6 +994,9 @@ export default {
           mask_url: maskUrl,
           prompt: this.form.prompt.trim(),
           negative_prompt: this.form.negative_prompt.trim(),
+          notes: this.designNotesText(),
+          interaction_notes_json: JSON.stringify(this.designNotes),
+          source_task_id: this.continueSourceTaskId || null,
         };
 
         const submitted = await this.request("/api/v1/design/submit", {
@@ -958,7 +1008,11 @@ export default {
         this.currentTaskId = submitted.task_id;
         this.generatingTaskId = submitted.task_id;
         this.taskStateText = `处理中 · ${this.shortTaskId(submitted.task_id)}`;
-        this.addHistory(submitted.task_id, "处理中", Date.now());
+        this.addHistory(submitted.task_id, "处理中", Date.now(), {
+          sourceTaskId: this.continueSourceTaskId || "",
+          iterationNo: this.nextHistoryIterationNo(this.continueSourceTaskId),
+          draftImageUrl: this.draftAsset?.url || "",
+        });
         this.startPolling(submitted.task_id, true);
       } catch (err) {
         this.taskStateText = "提交失败";
@@ -1016,11 +1070,12 @@ export default {
     renderTask(task) {
       const status = Number(task.status);
       const isPrimaryTask = !this.generatingTaskId || task.task_id === this.generatingTaskId;
+      const label = this.taskStatusLabel(task);
       if (isPrimaryTask) {
         this.currentTaskId = task.task_id;
-        this.taskStateText = `${statusText[status] || "未知"} · ${this.shortTaskId(task.task_id)}`;
+        this.taskStateText = `${label} · ${this.shortTaskId(task.task_id)}`;
       }
-      this.addHistory(task.task_id, statusText[status] || "未知", task.created_at);
+      this.addHistory(task.task_id, label, task.created_at);
 
       if (isPrimaryTask && task.result_image_url) {
         this.resultImage = task.result_image_url;
@@ -1071,6 +1126,61 @@ export default {
       this.maskState = "未绘制";
       nextTick(() => this.setupCanvas());
       ElMessage.success("已清空并恢复默认设置");
+    },
+
+    // Use the current generated result as the next editable draft.
+    continueEditFromResult() {
+      const sourceRecord = this.selectedRecord;
+      const imageUrl = this.displayResultImage || sourceRecord?.result_image_url || "";
+      if (!imageUrl) {
+        ElMessage.warning("请先选择一张已生成的结果图");
+        return;
+      }
+      const sourceTaskId = sourceRecord?.task_id || this.selectedHistoryTaskId || this.currentTaskId;
+      window.clearTimeout(this.pollTimer);
+      this.pollingTaskId = "";
+      this.generatingTaskId = "";
+      this.currentTaskId = "";
+      this.selectedHistoryTaskId = "";
+      this.selectedSavedSchemeId = "";
+      this.selectedRecord = null;
+      this.resultImage = "";
+      this.taskStateText = "等待提交";
+      this.continueSourceTaskId = sourceTaskId || "";
+      this.designNotes = [];
+      this.draftAsset = { url: imageUrl, previewUrl: this.assetPreviewUrl(imageUrl) };
+      this.draftPreview = this.assetPreviewUrl(imageUrl);
+      this.draftState = "二次编辑";
+      this.project.stage = "继续修改";
+      this.activeTab = "studio";
+      this.clearMask();
+      nextTick(() => this.drawDraftToCanvas(this.draftPreview));
+      ElMessage.success("已进入继续修改模式");
+    },
+
+    // Cancel the current generation task.
+    async cancelCurrentTask() {
+      const taskId = this.generatingTaskId || this.currentTaskId;
+      if (!taskId) return;
+      try {
+        await this.request(`/api/v1/tasks/${encodeURIComponent(taskId)}/cancel`, { method: "POST" });
+        if (this.pollingTaskId === taskId) this.pollingTaskId = "";
+        if (this.generatingTaskId === taskId) this.generatingTaskId = "";
+        window.clearTimeout(this.pollTimer);
+        const nextCache = { ...this.recordCache };
+        delete nextCache[taskId];
+        this.recordCache = nextCache;
+        this.history = this.history.filter((item) => item.taskId !== taskId);
+        this.saveHistory();
+        if (this.currentTaskId === taskId) this.currentTaskId = "";
+        if (this.selectedHistoryTaskId === taskId) this.selectedHistoryTaskId = "";
+        if (this.selectedRecord?.task_id === taskId) this.selectedRecord = null;
+        this.resultImage = "";
+        this.taskStateText = "等待提交";
+        ElMessage.warning("已终止并删除任务记录");
+      } catch (err) {
+        ElMessage.error(err.message);
+      }
     },
 
     // Build the result download filename.
@@ -1331,6 +1441,15 @@ export default {
       return `${taskId.slice(0, 10)}...${taskId.slice(-4)}`;
     },
 
+    // Format task status with terminal reason.
+    taskStatusLabel(item) {
+      if (Number(item?.status) !== 4) return statusText[Number(item?.status)] || "未知";
+      const message = item?.error_message || "";
+      if (message.includes("终止")) return "已终止";
+      if (message.includes("超时")) return "已超时";
+      return "失败";
+    },
+
     // Normalize local history items.
     normalizeHistory(items) {
       const fallbackBase = Date.now();
@@ -1369,11 +1488,11 @@ export default {
     },
 
     // Add or update a history item.
-    addHistory(taskId, status, createdAtValue) {
+    addHistory(taskId, status, createdAtValue, extra = {}) {
       const existing = this.history.find((item) => item.taskId === taskId);
       const createdAt = existing?.createdAt || this.toTimestampMs(createdAtValue) || Date.now();
       const time = existing?.time || new Date(createdAt).toLocaleString();
-      const nextItem = { taskId, status, time, createdAt };
+      const nextItem = { ...existing, ...extra, taskId, status, time, createdAt };
 
       this.history = [nextItem, ...this.history.filter((item) => item.taskId !== taskId)]
         .sort((a, b) => b.createdAt - a.createdAt)
@@ -1381,13 +1500,37 @@ export default {
       this.saveHistory();
     },
 
+    // Estimate the next version number in the current local history chain.
+    nextHistoryIterationNo(sourceTaskId) {
+      if (!sourceTaskId) return 1;
+      const byId = new Map(this.history.map((item) => [item.taskId, item]));
+      const rootOf = (taskId) => {
+        let current = taskId;
+        const seen = new Set();
+        while (current && byId.has(current) && !seen.has(current)) {
+          seen.add(current);
+          const parentId = byId.get(current)?.sourceTaskId;
+          if (!parentId || !byId.has(parentId)) return current;
+          current = parentId;
+        }
+        return current || taskId;
+      };
+      const rootId = rootOf(sourceTaskId);
+      const count = this.history.filter((item) => rootOf(item.taskId) === rootId).length;
+      return count + 1;
+    },
+
     // Convert a record to a history item.
     recordToHistoryItem(record) {
       return {
         taskId: record.task_id,
-        status: statusText[Number(record.status)] || "未知",
+        status: this.taskStatusLabel(record),
         time: new Date(this.toTimestampMs(record.created_at) || Date.now()).toLocaleString(),
         createdAt: this.toTimestampMs(record.created_at) || Date.now(),
+        sourceTaskId: record.source_task_id || "",
+        iterationNo: Number(record.iteration_no || 1),
+        draftImageUrl: record.draft_image_url || "",
+        resultImageUrl: record.result_image_url || "",
       };
     },
 
@@ -1412,6 +1555,10 @@ export default {
         const records = await this.request(`/api/v1/design/records?${params.toString()}`);
         for (const record of records) this.cacheRecord(record);
         this.history = records.map((record) => this.recordToHistoryItem(record));
+        const running = records.find((record) => [1, 2].includes(Number(record.status)));
+        if (running && !this.generatingTaskId) {
+          this.restoreRunningTask({ task_id: running.task_id, status: running.status, created_at: running.created_at });
+        }
         this.saveHistory();
         if (showMessage) ElMessage.success("记录已同步");
       } catch (err) {
@@ -1491,7 +1638,11 @@ export default {
       try {
         const tasks = await this.request("/api/v1/tasks?limit=20");
         for (const task of tasks) {
-          this.addHistory(task.task_id, statusText[Number(task.status)] || "未知", task.created_at);
+          this.addHistory(task.task_id, this.taskStatusLabel(task), task.created_at);
+        }
+        const running = tasks.find((task) => [1, 2].includes(Number(task.status)));
+        if (running && !this.generatingTaskId) {
+          this.restoreRunningTask(running);
         }
         if (showMessage) ElMessage.success("记录已同步");
       } catch (err) {
@@ -1499,14 +1650,38 @@ export default {
       }
     },
 
+    // Restore a running task after refresh or history click.
+    restoreRunningTask(task) {
+      if (!task?.task_id) return;
+      this.currentTaskId = task.task_id;
+      this.generatingTaskId = task.task_id;
+      this.taskStateText = `${this.taskStatusLabel(task)} · ${this.shortTaskId(task.task_id)}`;
+      this.activeTab = "studio";
+      this.startPolling(task.task_id, true);
+    },
+
     // Open a history item.
-    openHistory(taskId) {
+    async openHistory(taskId) {
       this.selectedSavedSchemeId = "";
       this.selectedHistoryTaskId = taskId;
       this.activeTab = "studio";
       this.selectedRecord = this.recordCache[taskId] || null;
-      if (!this.generatingTaskId) {
-        this.currentTaskId = taskId;
+      try {
+        const task = await this.request(`/api/v1/tasks/${encodeURIComponent(taskId)}`);
+        this.addHistory(task.task_id, this.taskStatusLabel(task), task.created_at);
+        if ([1, 2].includes(Number(task.status))) {
+          this.restoreRunningTask(task);
+        } else {
+          if (this.generatingTaskId === taskId) this.generatingTaskId = "";
+          if (this.pollingTaskId === taskId) this.pollingTaskId = "";
+          this.currentTaskId = taskId;
+          this.taskStateText = `${this.taskStatusLabel(task)} · ${this.shortTaskId(taskId)}`;
+          if (task.result_image_url) this.resultImage = task.result_image_url;
+        }
+      } catch (err) {
+        if (!this.generatingTaskId) {
+          this.currentTaskId = taskId;
+        }
       }
       const cached = this.recordCache[taskId];
       if (cached) {

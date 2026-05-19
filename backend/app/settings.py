@@ -28,6 +28,7 @@ class Settings(BaseSettings):  # 集中读取后端运行所需的环境变量�
     recommendation_cache_ttl_s: int = 600
     generation_queue_enabled: bool = True
     generation_queue_poll_timeout_s: int = 2
+    generation_task_timeout_s: int = 600
 
     remote_upload_enabled: bool = False
     remote_upload_host: str = ""

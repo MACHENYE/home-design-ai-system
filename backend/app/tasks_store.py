@@ -154,6 +154,17 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
             self._create_table(
                 conn,
                 """
+                CREATE TABLE IF NOT EXISTS task_cancellations (
+                  task_id TEXT PRIMARY KEY,
+                  remote_task_id TEXT NULL,
+                  user_id INTEGER NULL,
+                  created_at INTEGER NOT NULL
+                )
+                """
+            )
+            self._create_table(
+                conn,
+                """
                 CREATE TABLE IF NOT EXISTS design_records (
                   task_id TEXT PRIMARY KEY,
                   user_id INTEGER NULL,
@@ -171,6 +182,9 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
                   mask_url TEXT NULL,
                   result_image_url TEXT NULL,
                   error_message TEXT NULL,
+                  source_task_id TEXT NULL,
+                  iteration_no INTEGER NOT NULL DEFAULT 1,
+                  interaction_notes_json TEXT NULL,
                   lighting_score INTEGER NULL,
                   style_match_score INTEGER NULL,
                   space_utilization_score INTEGER NULL,
@@ -259,6 +273,8 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
                   iteration_no INTEGER NOT NULL,
                   room_type VARCHAR(80) NULL,
                   design_style VARCHAR(80) NULL,
+                  source_task_id VARCHAR(191) NULL,
+                  interaction_notes_json TEXT NULL,
                   mode VARCHAR(40) NOT NULL,
                   provider VARCHAR(40) NOT NULL,
                   prompt_snapshot TEXT NOT NULL,
@@ -318,12 +334,17 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
             self._ensure_column(conn, "design_records", "satisfaction_score", "INTEGER NULL")
             self._ensure_column(conn, "design_records", "feedback_text", "TEXT NULL")
             self._ensure_column(conn, "design_records", "feedback_updated_at", "INTEGER NULL")
+            self._ensure_column(conn, "design_records", "source_task_id", "VARCHAR(191) NULL")
+            self._ensure_column(conn, "design_records", "iteration_no", "INTEGER NOT NULL DEFAULT 1")
+            self._ensure_column(conn, "design_records", "interaction_notes_json", "TEXT NULL")
             self._ensure_column(conn, "users", "role", "TEXT NOT NULL DEFAULT 'user'")
             self._ensure_column(conn, "system_logs", "duration_ms", "INTEGER NULL")
             self._ensure_column(conn, "system_logs", "request_path", "TEXT NULL")
             self._ensure_column(conn, "system_logs", "ip_address", "TEXT NULL")
             self._ensure_column(conn, "design_iterations", "room_type", "VARCHAR(80) NULL")
             self._ensure_column(conn, "design_iterations", "design_style", "VARCHAR(80) NULL")
+            self._ensure_column(conn, "design_iterations", "source_task_id", "VARCHAR(191) NULL")
+            self._ensure_column(conn, "design_iterations", "interaction_notes_json", "TEXT NULL")
             self._remove_project_room_tables(conn)
             self._remove_reference_image_column(conn)
             self._normalize_mysql_schema(conn)
@@ -415,13 +436,16 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
                 conn.execute(
                     """
                     INSERT INTO design_iterations (
-                      task_id, iteration_no, room_type, design_style, mode, provider,
-                      prompt_snapshot, status, score, created_at, updated_at
+                      task_id, iteration_no, room_type, design_style, source_task_id,
+                      interaction_notes_json, mode, provider, prompt_snapshot, status,
+                      score, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON DUPLICATE KEY UPDATE
                       room_type=VALUES(room_type),
                       design_style=VALUES(design_style),
+                      source_task_id=VALUES(source_task_id),
+                      interaction_notes_json=VALUES(interaction_notes_json),
                       mode=VALUES(mode),
                       provider=VALUES(provider),
                       prompt_snapshot=VALUES(prompt_snapshot),
@@ -434,6 +458,8 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
                         iteration_no,
                         room_type,
                         design_style,
+                        row.get("source_task_id"),
+                        row.get("interaction_notes_json"),
                         mode,
                         provider,
                         row["prompt"],
@@ -965,6 +991,179 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
             records.append(self._row_to_task_record(row))
         return records
 
+    def cancel_task(self, task_id: str, user_id: int, message: str) -> TaskRecord | None:  # 将当前用户的运行中任务标记为失败，用错误信息区分用户终止
+        now = int(time.time())
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM tasks
+                WHERE task_id=? AND (user_id=? OR user_id IS NULL)
+                LIMIT 1
+                """,
+                (task_id, user_id),
+            ).fetchone()
+            if not row:
+                return None
+            if int(row["status"]) not in {int(NanoBananaTaskStatus.created), int(NanoBananaTaskStatus.processing)}:
+                return self._row_to_task_record(row)
+            raw = {}
+            if row.get("raw_json"):
+                try:
+                    raw = json.loads(row["raw_json"])
+                except json.JSONDecodeError:
+                    raw = {}
+            raw_json = json.dumps({**raw, "cancelled": True, "cancel_reason": message}, ensure_ascii=False)
+            conn.execute(
+                """
+                UPDATE tasks
+                SET status=?, updated_at=?, error_message=?, raw_json=?
+                WHERE task_id=? AND status IN (?, ?)
+                """,
+                (
+                    int(NanoBananaTaskStatus.failed),
+                    now,
+                    message,
+                    raw_json,
+                    task_id,
+                    int(NanoBananaTaskStatus.created),
+                    int(NanoBananaTaskStatus.processing),
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE design_records
+                SET status=?, updated_at=?, error_message=?
+                WHERE task_id=?
+                """,
+                (int(NanoBananaTaskStatus.failed), now, message, task_id),
+            )
+            conn.execute(
+                """
+                UPDATE design_iterations
+                SET status=?, updated_at=?
+                WHERE task_id=?
+                """,
+                (int(NanoBananaTaskStatus.failed), now, task_id),
+            )
+            conn.commit()
+            updated = conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+        return self._row_to_task_record(updated) if updated else None
+
+    def cancel_and_delete_task(self, task_id: str, user_id: int) -> bool:  # 记录取消标记后删除当前用户的任务和设计记录
+        now = int(time.time())
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT task_id, user_id, remote_task_id, raw_json
+                FROM tasks
+                WHERE task_id=? AND (user_id=? OR user_id IS NULL)
+                LIMIT 1
+                """,
+                (task_id, user_id),
+            ).fetchone()
+            if not row:
+                return False
+            raw = {}
+            if row.get("raw_json"):
+                try:
+                    raw = json.loads(row["raw_json"])
+                except json.JSONDecodeError:
+                    raw = {}
+            remote_task_id = row.get("remote_task_id") or raw.get("remote_task_id")
+            conn.execute(
+                """
+                INSERT INTO task_cancellations (task_id, remote_task_id, user_id, created_at)
+                VALUES (?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                  remote_task_id=VALUES(remote_task_id),
+                  user_id=VALUES(user_id),
+                  created_at=VALUES(created_at)
+                """,
+                (task_id, str(remote_task_id) if remote_task_id else None, user_id, now),
+            )
+            conn.execute("DELETE FROM favorite_schemes WHERE task_id=? AND (user_id=? OR user_id IS NULL)", (task_id, user_id))
+            conn.execute("DELETE FROM design_records WHERE task_id=? AND (user_id=? OR user_id IS NULL)", (task_id, user_id))
+            cur = conn.execute("DELETE FROM tasks WHERE task_id=? AND (user_id=? OR user_id IS NULL)", (task_id, user_id))
+            conn.commit()
+            return cur.rowcount > 0
+
+    def is_cancelled_task_identifier(self, task_id: str) -> bool:  # 判断本地或远程任务编号是否已经被用户取消删除
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM task_cancellations
+                WHERE task_id=? OR remote_task_id=?
+                LIMIT 1
+                """,
+                (task_id, task_id),
+            ).fetchone()
+        return bool(row)
+
+    def expire_stale_tasks(self, timeout_s: int, *, user_id: int | None = None, task_id: str | None = None, message: str) -> int:  # 将超过时限仍未完成的任务自动标记为失败
+        if timeout_s <= 0:
+            return 0
+        now = int(time.time())
+        threshold = now - timeout_s
+        where = ["status IN (?, ?)", "created_at<=?"]
+        params: list[object] = [int(NanoBananaTaskStatus.created), int(NanoBananaTaskStatus.processing), threshold]
+        if user_id is not None:
+            where.append("user_id=?")
+            params.append(user_id)
+        if task_id is not None:
+            where.append("task_id=?")
+            params.append(task_id)
+        where_sql = " AND ".join(where)
+        raw_marker = json.dumps({"timed_out": True, "timeout_message": message}, ensure_ascii=False)
+        with self._connect() as conn:
+            rows = conn.execute(f"SELECT task_id, raw_json FROM tasks WHERE {where_sql}", params).fetchall()
+            if not rows:
+                return 0
+            task_ids = [row["task_id"] for row in rows]
+            for row in rows:
+                raw = {}
+                if row.get("raw_json"):
+                    try:
+                        raw = json.loads(row["raw_json"])
+                    except json.JSONDecodeError:
+                        raw = {}
+                raw_json = json.dumps({**raw, **json.loads(raw_marker)}, ensure_ascii=False)
+                conn.execute(
+                    """
+                    UPDATE tasks
+                    SET status=?, updated_at=?, error_message=?, raw_json=?
+                    WHERE task_id=? AND status IN (?, ?)
+                    """,
+                    (
+                        int(NanoBananaTaskStatus.failed),
+                        now,
+                        message,
+                        raw_json,
+                        row["task_id"],
+                        int(NanoBananaTaskStatus.created),
+                        int(NanoBananaTaskStatus.processing),
+                    ),
+                )
+            placeholders = ",".join(["?"] * len(task_ids))
+            conn.execute(
+                f"""
+                UPDATE design_records
+                SET status=?, updated_at=?, error_message=?
+                WHERE task_id IN ({placeholders})
+                """,
+                [int(NanoBananaTaskStatus.failed), now, message, *task_ids],
+            )
+            conn.execute(
+                f"""
+                UPDATE design_iterations
+                SET status=?, updated_at=?
+                WHERE task_id IN ({placeholders})
+                """,
+                [int(NanoBananaTaskStatus.failed), now, *task_ids],
+            )
+            conn.commit()
+        return len(task_ids)
+
     def save_design_request(
         self,
         task_id: str,
@@ -978,6 +1177,8 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
         now = int(time.time())
         draft_image_url = req.image_urls[0] if len(req.image_urls) >= 1 else None
         with self._connect() as conn:
+            source_task_id = req.source_task_id.strip() if req.source_task_id else None
+            iteration_no = self._next_iteration_no(conn, source_task_id, user_id)
             params = (
                 task_id,
                 int(status),
@@ -994,6 +1195,9 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
                 req.mask_url,
                 result_image_url,
                 error_message,
+                source_task_id,
+                iteration_no,
+                req.interaction_notes_json,
                 now,
                 now,
                 user_id,
@@ -1005,9 +1209,10 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
                       task_id, status, prompt, negative_prompt, room_type, design_style,
                       color_preference, material_preference, budget_level, cultural_element,
                       keep_structure, draft_image_url, mask_url, result_image_url,
-                      error_message, created_at, updated_at, user_id
+                      error_message, source_task_id, iteration_no, interaction_notes_json,
+                      created_at, updated_at, user_id
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON DUPLICATE KEY UPDATE
                       user_id=COALESCE(VALUES(user_id), user_id),
                       status=VALUES(status),
@@ -1024,6 +1229,9 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
                       mask_url=VALUES(mask_url),
                       result_image_url=COALESCE(VALUES(result_image_url), result_image_url),
                       error_message=VALUES(error_message),
+                      source_task_id=VALUES(source_task_id),
+                      iteration_no=VALUES(iteration_no),
+                      interaction_notes_json=VALUES(interaction_notes_json),
                       updated_at=VALUES(updated_at)
                     """,
                     params,
@@ -1035,9 +1243,10 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
                       task_id, status, prompt, negative_prompt, room_type, design_style,
                       color_preference, material_preference, budget_level, cultural_element,
                       keep_structure, draft_image_url, mask_url, result_image_url,
-                      error_message, created_at, updated_at, user_id
+                      error_message, source_task_id, iteration_no, interaction_notes_json,
+                      created_at, updated_at, user_id
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(task_id) DO UPDATE SET
                       user_id=COALESCE(excluded.user_id, design_records.user_id),
                       status=excluded.status,
@@ -1054,11 +1263,82 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
                       mask_url=excluded.mask_url,
                       result_image_url=COALESCE(excluded.result_image_url, design_records.result_image_url),
                       error_message=excluded.error_message,
+                      source_task_id=excluded.source_task_id,
+                      iteration_no=excluded.iteration_no,
+                      interaction_notes_json=excluded.interaction_notes_json,
                       updated_at=excluded.updated_at
                     """,
                     params,
                 )
+            conn.execute(
+                """
+                INSERT INTO design_iterations (
+                  task_id, iteration_no, room_type, design_style, source_task_id,
+                  interaction_notes_json, mode, provider, prompt_snapshot, status,
+                  created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                  room_type=VALUES(room_type),
+                  design_style=VALUES(design_style),
+                  source_task_id=VALUES(source_task_id),
+                  interaction_notes_json=VALUES(interaction_notes_json),
+                  mode=VALUES(mode),
+                  provider=VALUES(provider),
+                  prompt_snapshot=VALUES(prompt_snapshot),
+                  status=VALUES(status),
+                  updated_at=VALUES(updated_at)
+                """,
+                (
+                    task_id,
+                    iteration_no,
+                    req.room_type,
+                    req.design_style,
+                    source_task_id,
+                    req.interaction_notes_json,
+                    req.mode.value,
+                    "nanobanana",
+                    req.prompt,
+                    int(status),
+                    now,
+                    now,
+                ),
+            )
             conn.commit()
+
+    def _next_iteration_no(self, conn: Any, source_task_id: str | None, user_id: int | None) -> int:  # 根据同一方案链的最大版号计算下一版编号
+        if not source_task_id:
+            return 1
+        params: list[object] = []
+        where = ""
+        if user_id is not None:
+            where = "WHERE user_id=? OR user_id IS NULL"
+            params.append(user_id)
+        rows = conn.execute(
+            f"SELECT task_id, source_task_id, iteration_no FROM design_records {where}",
+            params,
+        ).fetchall()
+        by_id = {row["task_id"]: row for row in rows}
+        if source_task_id not in by_id:
+            return 2
+
+        def root_of(task_id: str) -> str:
+            seen: set[str] = set()
+            current = task_id
+            while current in by_id and current not in seen:
+                seen.add(current)
+                parent_id = by_id[current].get("source_task_id")
+                if not parent_id or parent_id not in by_id:
+                    return current
+                current = parent_id
+            return current
+
+        root_task_id = root_of(source_task_id)
+        max_iteration = 1
+        for row in rows:
+            if root_of(row["task_id"]) == root_task_id:
+                max_iteration = max(max_iteration, int(row.get("iteration_no") or 1))
+        return max_iteration + 1
 
     def update_design_result(
         self,
@@ -1077,6 +1357,14 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
                 WHERE task_id=?
                 """,
                 (int(status), now, result_image_url, error_message, task_id),
+            )
+            conn.execute(
+                """
+                UPDATE design_iterations
+                SET status=?, updated_at=?
+                WHERE task_id=?
+                """,
+                (int(status), now, task_id),
             )
             conn.commit()
 
@@ -1715,6 +2003,9 @@ class TasksStore:  # 封装任务、用户、设计记录、收藏和日志等�
             mask_url=row["mask_url"],
             result_image_url=row["result_image_url"],
             error_message=row["error_message"],
+            source_task_id=row.get("source_task_id"),
+            iteration_no=int(row.get("iteration_no") or 1),
+            interaction_notes_json=row.get("interaction_notes_json"),
             lighting_score=row["lighting_score"],
             style_match_score=row["style_match_score"],
             space_utilization_score=row["space_utilization_score"],

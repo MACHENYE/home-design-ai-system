@@ -28,14 +28,25 @@
         ></el-alert>
 
         <div class="result-actions">
-          <div class="inline-actions">
+          <div class="result-action-grid">
             <el-button type="primary" plain :disabled="!displayResultImage" @click="$emit('save-current-scheme')">
               收藏当前方案
             </el-button>
+            <el-button plain :disabled="!displayResultImage" @click="$emit('continue-edit')">继续修改</el-button>
             <el-button plain :disabled="!displayResultImage" @click="$emit('download-result-image')">下载图片</el-button>
             <el-button plain :disabled="!selectedRecord" @click="$emit('save-pdf-report')">保存PDF</el-button>
+            <el-button
+              class="cancel-generation-button"
+              :class="{ reserved: !isGenerating }"
+              type="danger"
+              plain
+              :disabled="!isGenerating || !currentTaskId"
+              @click="$emit('cancel-current-task')"
+            >
+              终止生成
+            </el-button>
           </div>
-          <el-tag effect="plain">{{ currentTaskId ? shortTaskId(currentTaskId) : "未开始" }}</el-tag>
+          <el-tag class="result-task-tag" effect="plain">{{ currentTaskId ? shortTaskId(currentTaskId) : "未开始" }}</el-tag>
         </div>
 
         <div class="feedback-card">
@@ -112,6 +123,16 @@
             </div>
             <div class="detail-grid">
               <div>
+                <label>版本轮次</label>
+                <span>第 {{ selectedRecord.iteration_no || 1 }} 版</span>
+              </div>
+              <div>
+                <label>来源任务</label>
+                <span>{{ selectedRecord.source_task_id ? shortTaskId(selectedRecord.source_task_id) : "首轮生成" }}</span>
+              </div>
+            </div>
+            <div class="detail-grid">
+              <div>
                 <label>空间</label>
                 <span>{{ selectedRecord.room_type || "-" }}</span>
               </div>
@@ -135,6 +156,14 @@
             <div class="detail-row" v-if="selectedRecord.negative_prompt">
               <label>排除项</label>
               <p>{{ selectedRecord.negative_prompt }}</p>
+            </div>
+            <div class="detail-row" v-if="recordNotes.length">
+              <label>掩码标签</label>
+              <p v-for="note in recordNotes" :key="note.no">{{ note.no }}. {{ note.text }}</p>
+            </div>
+            <div class="detail-row" v-if="selectedRecord.error_message">
+              <label>任务状态</label>
+              <p>{{ selectedRecord.error_message }}</p>
             </div>
             <div class="url-list">
               <div v-if="selectedRecord.draft_image_url">
@@ -201,15 +230,20 @@
         </div>
         <div v-if="history.length" class="history-list">
           <button
-            v-for="item in history"
+            v-for="item in historyTreeItems"
             :key="item.taskId"
             type="button"
             class="history-item"
-            :class="{ active: item.taskId === (selectedHistoryTaskId || currentTaskId) }"
+            :class="{ active: item.taskId === (selectedHistoryTaskId || currentTaskId), child: item.level > 0 }"
+            :style="{ '--tree-level': item.level }"
             @click="$emit('open-history', item.taskId)"
           >
-            <strong>{{ shortTaskId(item.taskId) }}</strong>
-            <span>{{ item.status }}</span>
+            <span class="history-tree-line" aria-hidden="true"></span>
+            <span class="history-main">
+              <strong>{{ shortTaskId(item.taskId) }}</strong>
+              <small>{{ item.displayIterationNo > 1 ? `第 ${item.displayIterationNo} 版` : "首版" }}</small>
+            </span>
+            <span class="history-status">{{ item.status }}</span>
           </button>
         </div>
         <el-empty v-else description="暂无任务" :image-size="64"></el-empty>
@@ -297,6 +331,8 @@ export default {
     "update:recordStyleFilter",
     "load-design-records",
     "open-history",
+    "continue-edit",
+    "cancel-current-task",
   ],
   // Initialize component state.
   data() {
@@ -308,6 +344,84 @@ export default {
     // Return the feedback task id.
     feedbackTaskId() {
       return this.selectedRecord?.task_id || this.currentTaskId || "";
+    },
+    // Parse design notes stored with the record.
+    recordNotes() {
+      if (!this.selectedRecord?.interaction_notes_json) return [];
+      try {
+        const notes = JSON.parse(this.selectedRecord.interaction_notes_json);
+        return Array.isArray(notes) ? notes : [];
+      } catch (err) {
+        return [];
+      }
+    },
+    // Build a flattened version tree for history records.
+    historyTreeItems() {
+      const nodes = new Map();
+      for (const item of this.history) {
+        nodes.set(item.taskId, { ...item, children: [] });
+      }
+      const resultToTaskId = new Map();
+      for (const node of nodes.values()) {
+        if (node.resultImageUrl) resultToTaskId.set(node.resultImageUrl, node.taskId);
+      }
+      for (const node of nodes.values()) {
+        if (!node.sourceTaskId && node.draftImageUrl) {
+          const inferredParentId = resultToTaskId.get(node.draftImageUrl);
+          if (inferredParentId && inferredParentId !== node.taskId) {
+            node.sourceTaskId = inferredParentId;
+          }
+        }
+      }
+      const rootOf = (taskId) => {
+        let current = taskId;
+        const seen = new Set();
+        while (current && nodes.has(current) && !seen.has(current)) {
+          seen.add(current);
+          const parentId = nodes.get(current)?.sourceTaskId;
+          if (!parentId || !nodes.has(parentId)) return current;
+          current = parentId;
+        }
+        return current || taskId;
+      };
+      for (const node of nodes.values()) {
+        if (node.sourceTaskId) {
+          const rootId = rootOf(node.sourceTaskId);
+          if (rootId && rootId !== node.taskId) {
+            node.sourceTaskId = rootId;
+          }
+        }
+      }
+      const roots = [];
+      for (const node of nodes.values()) {
+        const parentId = node.sourceTaskId;
+        const parent = parentId ? nodes.get(parentId) : null;
+        if (parent) {
+          parent.children.push(node);
+        } else {
+          roots.push(node);
+        }
+      }
+      const sortRoots = (a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0);
+      const sortChildren = (a, b) =>
+        Number(a.iterationNo || 1) - Number(b.iterationNo || 1) ||
+        Number(a.createdAt || 0) - Number(b.createdAt || 0);
+      const flat = [];
+      const visit = (node, level) => {
+        flat.push({ ...node, level });
+        node.children.sort(sortChildren).forEach((child) => visit(child, level + 1));
+      };
+      roots.sort(sortRoots).forEach((root) => {
+        const start = flat.length;
+        visit(root, 0);
+        flat
+          .slice(start)
+          .sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0))
+          .forEach((item, index) => {
+            item.displayIterationNo = index + 1;
+          });
+      });
+      return flat;
     },
   },
   watch: {

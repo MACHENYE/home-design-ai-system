@@ -135,9 +135,57 @@
         <el-form-item label="局部重绘笔刷">
           <el-slider :model-value="brushSize" :min="8" :max="72" @update:model-value="$emit('update:brushSize', $event)"></el-slider>
         </el-form-item>
+        <div class="note-toolbar">
+          <el-button size="small" :type="noteMode ? 'primary' : 'default'" plain :disabled="!maskDirty" @click="toggleNoteMode">
+            掩码标签
+          </el-button>
+          <el-button size="small" plain :disabled="!designNotes.length" @click="$emit('clear-design-notes')">清空标签</el-button>
+          <span>{{ maskNoteHint }}</span>
+        </div>
         <div class="canvas-stack">
-          <canvas ref="draftCanvasRef" width="960" height="540"></canvas>
+          <img v-if="draftPreview" class="canvas-draft-image" :src="draftPreview" alt="设计底稿预览" />
+          <span v-else class="canvas-empty-hint">上传底稿后可进行局部重绘和便签标注</span>
+          <canvas ref="draftCanvasRef" class="draft-canvas" width="960" height="540"></canvas>
           <canvas ref="maskCanvasRef" width="960" height="540"></canvas>
+          <div
+            v-if="pendingNote"
+            class="design-note-editor"
+            :class="noteEditorClass"
+            :style="noteEditorStyle"
+            @pointerdown.stop
+            @click.stop
+          >
+            <el-input
+              ref="noteInputRef"
+              v-model="pendingNoteText"
+              size="small"
+              maxlength="80"
+              placeholder="说明这片掩码要改成什么"
+              @keyup.enter="confirmPendingNote"
+            ></el-input>
+            <div class="design-note-editor-actions">
+              <el-button size="small" type="primary" @click="confirmPendingNote">确定</el-button>
+              <el-button size="small" plain @click="cancelPendingNote">取消</el-button>
+            </div>
+          </div>
+          <button
+            v-for="note in designNotes"
+            :key="note.no"
+            type="button"
+            class="design-note-marker"
+            :style="{ left: `${note.x * 100}%`, top: `${note.y * 100}%` }"
+            :title="`掩码区域：${note.text}`"
+            @click.stop="$emit('remove-design-note', note.no)"
+          >
+            {{ note.no }}
+          </button>
+        </div>
+        <div v-if="designNotes.length" class="design-note-list">
+          <div v-for="note in designNotes" :key="note.no" class="design-note-item">
+            <strong>{{ note.no }}</strong>
+            <span>{{ note.text }}</span>
+            <el-button size="small" text type="danger" @click="$emit('remove-design-note', note.no)">删除</el-button>
+          </div>
         </div>
         <div class="mask-actions">
           <el-tag size="small" :type="maskDirty ? 'success' : 'info'">{{ maskState }}</el-tag>
@@ -227,6 +275,10 @@ export default {
       type: Boolean,
       default: false,
     },
+    designNotes: {
+      type: Array,
+      default: () => [],
+    },
   },
   emits: [
     "handle-file",
@@ -236,14 +288,61 @@ export default {
     "optimize-prompt",
     "clear-draft",
     "submit-design",
+    "add-design-note",
+    "remove-design-note",
+    "clear-design-notes",
     "update:brushSize",
     "update:maskDirty",
     "update:maskState",
   ],
+  data() {
+    return {
+      noteMode: false,
+      pendingNote: null,
+      pendingNoteText: "",
+    };
+  },
+  computed: {
+    // Keep the inline note editor inside the image bounds.
+    noteEditorClass() {
+      if (!this.pendingNote) return {};
+      return {
+        "align-left": this.pendingNote.x < 0.24,
+        "align-right": this.pendingNote.x > 0.76,
+      };
+    },
+
+    // Position the inline note editor near the clicked point.
+    noteEditorStyle() {
+      if (!this.pendingNote) return {};
+      const top = `${this.pendingNote.y * 100}%`;
+      if (this.pendingNote.x < 0.24) {
+        return { left: "12px", top };
+      }
+      if (this.pendingNote.x > 0.76) {
+        return { right: "12px", top };
+      }
+      return { left: `${this.pendingNote.x * 100}%`, top };
+    },
+    // Return the mask note toolbar hint.
+    maskNoteHint() {
+      if (!this.maskDirty) return "先涂黑需要修改的区域，再添加标签";
+      return this.noteMode ? "点击掩码区域，说明这片区域要改成什么" : "标签只描述掩码区域，修改范围仍以黑色掩码为准";
+    },
+  },
   // Run component startup work.
   mounted() {
     this.setupCanvas();
     if (this.draftPreview) this.drawDraftToCanvas(this.draftPreview);
+  },
+  watch: {
+    draftPreview(url) {
+      if (url) {
+        this.$nextTick(() => this.drawDraftToCanvas(url));
+      } else {
+        this.clearDraftCanvas();
+      }
+    },
   },
   methods: {
     // Initialize the mask canvas.
@@ -258,6 +357,10 @@ export default {
 
       // Handle pointer down drawing.
       canvas.addEventListener("pointerdown", (event) => {
+        if (this.noteMode) {
+          this.addNoteFromPointer(event);
+          return;
+        }
         canvas.setPointerCapture(event.pointerId);
         const p = this.canvasPoint(event);
         ctx.beginPath();
@@ -266,6 +369,7 @@ export default {
 
       // Handle pointer move drawing.
       canvas.addEventListener("pointermove", (event) => {
+        if (this.noteMode) return;
         if (event.buttons !== 1) return;
         const p = this.canvasPoint(event);
         ctx.strokeStyle = "rgba(0, 0, 0, 0.72)";
@@ -275,6 +379,42 @@ export default {
         this.$emit("update:maskDirty", true);
         this.$emit("update:maskState", "已绘制");
       });
+    },
+
+    // Add a mask note at the clicked image position.
+    addNoteFromPointer(event) {
+      const canvas = this.$refs.maskCanvasRef;
+      const p = this.canvasPoint(event);
+      this.pendingNote = {
+        x: Math.max(0.04, Math.min(0.96, p.x / canvas.width)),
+        y: Math.max(0.08, Math.min(0.92, p.y / canvas.height)),
+      };
+      this.pendingNoteText = "";
+      this.$nextTick(() => this.$refs.noteInputRef?.focus?.());
+    },
+
+    // Toggle note mode and clear unfinished note input when leaving.
+    toggleNoteMode() {
+      this.noteMode = !this.noteMode;
+      if (!this.noteMode) this.cancelPendingNote();
+    },
+
+    // Save the pending mask note.
+    confirmPendingNote() {
+      const text = this.pendingNoteText.trim();
+      if (!this.pendingNote || !text) return;
+      this.$emit("add-design-note", {
+        x: this.pendingNote.x,
+        y: this.pendingNote.y,
+        text,
+      });
+      this.cancelPendingNote();
+    },
+
+    // Cancel unfinished note input.
+    cancelPendingNote() {
+      this.pendingNote = null;
+      this.pendingNoteText = "";
     },
 
     // Calculate pointer coordinates on canvas.
@@ -311,11 +451,21 @@ export default {
       img.src = url;
     },
 
+    // Clear the hidden draft canvas.
+    clearDraftCanvas() {
+      const canvas = this.$refs.draftCanvasRef;
+      if (!canvas) return;
+      canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+    },
+
     // Clear the mask canvas.
     clearMask() {
       const canvas = this.$refs.maskCanvasRef;
       if (!canvas) return;
       canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+      this.cancelPendingNote();
+      this.noteMode = false;
+      this.$emit("clear-design-notes");
       this.$emit("update:maskDirty", false);
       this.$emit("update:maskState", "未绘制");
     },
